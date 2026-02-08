@@ -35,6 +35,9 @@ struct ValidationMetrics
     float avgReturn;        // 승인된 포트폴리오의 평균 수익률
     float avgPD;            // 승인된 포트폴리오의 평균 부도확률(Predicted PD)
     int approvedCount;      // 승인된 대출 건수
+
+    float bestPDThreshold;
+    float bestReturnThreshold;
 };
 
 struct ExperimentResult
@@ -175,7 +178,16 @@ public:
         return bestResult;
     }
 
+    // 2. Grid Search 실행 (이제 Threshold 인자가 필요 없음)
+    ExperimentResult RunGridSearch(const CsvLoader::Dataset& dataset, float splitRatio);
 
+    // 3. 모델 학습 + 내부 임계값 최적화까지 한 방에 수행하는 함수
+    ValidationMetrics RunDualModelValidationAndOptimizeThreshold(
+        const CsvLoader::Dataset& dataset,
+        const ModelConfig& clsConfig,
+        const ModelConfig& regConfig,
+        float splitRatio
+    );
     // --------------------------------------------------------------------------
     // 1. 모델 구조 분석
     // --------------------------------------------------------------------------
