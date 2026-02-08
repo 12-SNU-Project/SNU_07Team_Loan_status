@@ -54,13 +54,13 @@ public:
      // - 3: 얕음 (회귀 모델의 과적합 방지에 좋음)
      // - 5: 중간 (가장 일반적인 시작점)
      // - 7: 깊음 (분류 모델의 복잡한 패턴 학습용)
-    std::vector<int> candidateDepths = { 3, 5, 7 };
+    std::vector<int> candidateDepths = { 5, 7 };
 
     // 2. 학습률 (Eta): 
     // - 0.1: 빠름 (초반 탐색용)
     // - 0.05: 정교함 (가장 권장됨)
     // - 0.01: 매우 정교함 (시간 오래 걸림, 미세 튜닝용)
-    std::vector<float> candidateEtas = { 0.1f, 0.05f, 0.01f };
+    std::vector<float> candidateEtas = { 0.05f, 0.01f };
 
    
     // 목표 설정 (부도 확률 예측용)
@@ -75,13 +75,13 @@ public:
 
         // 1. 모델 성격(분류 vs 회귀)에 따른 기본 설정
         std::string obj = isClassification ? "binary:logistic" : "reg:absoluteerror";
-        std::string metric = isClassification ? "auc" : "rmse";
+        std::string metric = isClassification ? "auc" : "mae";
 
         // 분류(불균형 데이터)는 양성 클래스에 가중치 4배, 회귀는 1배
-        float scaleWeight = isClassification ? 4.0f : 1.0f;
+        float scaleWeight = isClassification ? 1.0f : 1.0f;
 
         // 분류는 미세한 패턴(1.0)까지, 회귀는 굵직한 패턴(5.0)만 학습
-        float minChild = isClassification ? 1.0f : 5.0f;
+        float minChild = isClassification ? 1.0f : 1.0f;
 
         // 2. 이중 루프로 조합 생성 (Depth x Eta)
         for (auto depth : candidateDepths)
@@ -401,6 +401,23 @@ public:
 
         std::cout << " -> Feature types and names configured successfully.\n";
     }
+
+    void PerformRandomPermutationTest(
+        const std::vector<float>& predPD,
+        const std::vector<float>& predEstReturn,
+        const std::vector<float>& testActualReturns,
+        const std::vector<float>& testBonds,
+        float bestPdTh, float bestRetTh,
+        int numPermutations = 1000);
+
+
+    void RunBestModelAndExportHeatmap(
+        const CsvLoader::Dataset& dataset,
+        const ModelConfig& bestClsConfig,
+        const ModelConfig& bestRegConfig,
+        float splitRatio
+    );
+ 
 private:
     
     BoosterHandle TrainBooster(DMatrixHandle hTrain, const ModelConfig& config)

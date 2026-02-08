@@ -59,6 +59,8 @@ CsvLoader::Dataset CsvLoader::Load()
         }
     }
 
+    std::cout << "\n";
+
     if (targetIdx == -1)
     {
         throw std::runtime_error("Target column not found: " + targetCol);
