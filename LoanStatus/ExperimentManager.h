@@ -54,7 +54,7 @@ public:
      // - 3: 얕음 (회귀 모델의 과적합 방지에 좋음)
      // - 5: 중간 (가장 일반적인 시작점)
      // - 7: 깊음 (분류 모델의 복잡한 패턴 학습용)
-    std::vector<int> candidateDepths = { 5, 7 };
+    std::vector<int> candidateDepths = { 3, 5, 7 };
 
     // 2. 학습률 (Eta): 
     // - 0.1: 빠름 (초반 탐색용)
@@ -74,7 +74,7 @@ public:
         int idCounter = 1;
 
         // 1. 모델 성격(분류 vs 회귀)에 따른 기본 설정
-        std::string obj = isClassification ? "binary:logistic" : "reg:squarederror";
+        std::string obj = isClassification ? "binary:logistic" : "reg:absoluteerror";
         std::string metric = isClassification ? "auc" : "rmse";
 
         // 분류(불균형 데이터)는 양성 클래스에 가중치 4배, 회귀는 1배
@@ -306,6 +306,66 @@ public:
 
         // 3. Sharpe Ratio 반환
         return (std_dev > 1e-6f) ? (mean_excess / std_dev) : 0.0f;
+    }
+
+
+
+    float CalculateSharpeRatioVer2(
+        const std::vector<float>& y_test,    // 실제 수익률 (Return)
+        const std::vector<float>& bond_test, // 채권 수익률 (Risk-Free Rate)
+        const std::vector<bool>& is_approved // 승인 여부
+    )
+    {
+        const size_t n = y_test.size();
+        if (n <= 1) return 0.0f;
+
+        // 절대 수익률 -> 초과 수익률
+        std::vector<float> excess_returns;
+        excess_returns.reserve(n);
+
+        double sum_excess = 0.0; // 정밀도를 위해 double 사용
+
+        for (size_t i = 0; i < n; ++i)
+        {
+            float excess_val = 0.0f;
+
+            if (is_approved[i])
+            {
+                // 승인됨: (실제 수익 - 채권 수익)
+                excess_val = y_test[i] - bond_test[i];
+            }
+            else
+            {
+                // 거절됨: 채권에 투자했다고 가정하면
+                // (채권 수익 - 채권 수익) = 0
+                excess_val = 0.0f;
+            }
+
+            excess_returns.push_back(excess_val);
+            sum_excess += excess_val;
+        }
+
+        // 1. 평균(Mean) 계산 (분자)
+        // 데이터: 초과 수익률 벡터
+        double mean_excess = sum_excess / static_cast<double>(n);
+
+        // 2. 표준편차(StdDev) 계산 (분모)
+        // 데이터: 위와 동일한 '초과 수익률 벡터' 사용 (팀원 피드백 반영)
+        double sq_diff_sum = 0.0;
+        for (float val : excess_returns)
+        {
+            double diff = val - mean_excess;
+            sq_diff_sum += (diff * diff);
+        }
+
+        // 표본 분산 및 표준편차
+        double variance = sq_diff_sum / static_cast<double>(n - 1);
+        double std_dev = std::sqrt(variance);
+
+        // 3. 샤프지수 반환
+        if (std_dev < 1e-9) return 0.0f; // 0으로 나누기 방지
+
+        return static_cast<float>(mean_excess / std_dev);
     }
     // 피처 타입 설정
     static void SetFeatureTypes(DMatrixHandle hData, const std::vector<std::string>& featureNames)

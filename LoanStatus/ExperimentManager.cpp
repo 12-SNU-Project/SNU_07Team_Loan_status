@@ -135,7 +135,7 @@ ExperimentResult ExperimentManager::RunGridSearchAuto(const CsvLoader::Dataset& 
 
 ValidationMetrics ExperimentManager::RunDualModelValidationAndOptimizeThreshold(const CsvLoader::Dataset& dataset, const ModelConfig& clsConfig, const ModelConfig& regConfig, float splitRatio)
 {
-    // --- [Part A: 모델 학습 (기존과 동일)] ---
+    //모델 학습
     size_t totalRows = dataset.rows;
     size_t splitPoint = static_cast<size_t>(totalRows * splitRatio);
     size_t testSize = totalRows - splitPoint;
@@ -167,7 +167,7 @@ ValidationMetrics ExperimentManager::RunDualModelValidationAndOptimizeThreshold(
     double sumPD = 0, minPD = 1.0, maxPD = 0.0;
     double sumRet = 0, minRet = 1.0, maxRet = -1.0;
 
-    // 샘플링으로 앞쪽 1000개만 보거나 전체 루프 돌림
+    // 샘플링
     for (size_t i = 0; i < testSize; ++i) 
     {
         if (predPD[i] < minPD) minPD = predPD[i];
@@ -179,7 +179,7 @@ ValidationMetrics ExperimentManager::RunDualModelValidationAndOptimizeThreshold(
         sumRet += predEstReturn[i];
     }
 
-    // 첫 번째 이터레이션에서만 로그 출력 (너무 많이 뜨면 보기 힘드니까)
+    // 첫 번째 이터레이션에서만 로그 출력
     static bool bPrintedDebug = false;
     if (!bPrintedDebug) 
     {
@@ -203,8 +203,8 @@ ValidationMetrics ExperimentManager::RunDualModelValidationAndOptimizeThreshold(
     std::vector<bool> isApproved(testSize);
 
     // 검색할 범위 설정
-    std::vector<float> pdCandidates = { 0.05f, 0.10f, 0.15f, 0.20f, 0.25f, 0.30f, 0.40f, 0.50f };
-    std::vector<float> retCandidates = { 0.0f, 0.02f, 0.04f, 0.05f, 0.06f, 0.08f };
+    std::vector<float> pdCandidates = { 0.05f, 0.10f, 0.15f, 0.20f, 0.25f};
+    std::vector<float> retCandidates = { 0.02f, 0.04f, 0.05f, 0.06f, 0.08f };
 
     for (float pdTh : pdCandidates)
     {
@@ -230,7 +230,7 @@ ValidationMetrics ExperimentManager::RunDualModelValidationAndOptimizeThreshold(
             // 너무 적게 승인되면 통계적 의미가 없으므로 스킵 (예: 10개 미만)
             if (approvedCount < 10) continue;
 
-            float currentSharpe = CalculateSharpeRatio(testActualReturns, testBonds, isApproved);
+            float currentSharpe = CalculateSharpeRatioVer2(testActualReturns, testBonds, isApproved);
 
             // 현재 모델 내에서 최고의 임계값 갱신
             if (currentSharpe > bestLocalMetrics.sharpeRatio)
@@ -392,7 +392,7 @@ ValidationMetrics ExperimentManager::RunDualModelValidation(
     std::vector<float> testActualReturns(dataset.returns.begin() + splitPoint, dataset.returns.end());
     std::vector<float> testBonds(dataset.bondYields.begin() + splitPoint, dataset.bondYields.end());
 
-    float sharpe = CalculateSharpeRatio(testActualReturns, testBonds, isApproved);
+    float sharpe = CalculateSharpeRatioVer2(testActualReturns, testBonds, isApproved);
 
 
     ValidationMetrics result;
