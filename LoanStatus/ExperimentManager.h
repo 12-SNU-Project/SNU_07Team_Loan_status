@@ -20,14 +20,28 @@ struct ModelConfig
     int numRound;           // numRound 이터레이션 횟수
     std::string objective;  // objective 목적 함수 logic:binary
     std::string evalMetric; // evalMetric 평가 기준
+
+    float minChildWeight = 1.0f; // 잎사귀 최소 가중치
+    float scalePosWeight = 1.0f; // 불균형 데이터 가중치
+    float subsample = 1.0f;      // 행 샘플링 비율 (Row Subsampling)
+    float colsample = 1.0f;      // 열 샘플링 비율 (Col Subsampling)
 };
 
 // 2. 실험 결과
-struct ExperimentResult 
+
+struct ValidationMetrics
 {
-    ModelConfig cls;
-    ModelConfig reg;
-    float finalScore;
+    float sharpeRatio;      // 샤프 지수
+    float avgReturn;        // 승인된 포트폴리오의 평균 수익률
+    float avgPD;            // 승인된 포트폴리오의 평균 부도확률(Predicted PD)
+    int approvedCount;      // 승인된 대출 건수
+};
+
+struct ExperimentResult
+{
+    ModelConfig bestClsConfig;
+    ModelConfig bestRegConfig;
+    ValidationMetrics bestMetrics; // 최고 기록의 상세 지표
 };
 
 class ExperimentManager 
@@ -42,24 +56,125 @@ public:
     std::string targetObjective = "binary:logistic";
     std::string targetMetric = "auc";
 
-    // Grid Search 조합 생성
-    std::vector<ModelConfig> GenerateGrid() 
+    // 0. Grid Search 조합 생성
+    std::vector<ModelConfig> GenerateGrid(bool isClassification)
     {
         std::vector<ModelConfig> configs;
-        auto idCounter = 1;
+        int idCounter = 1;
 
-        for (auto depth : candidateDepths) 
+        std::string obj = isClassification ? "binary:logistic" : "reg:squarederror";
+        std::string metric = isClassification ? "auc" : "rmse";
+
+        // 분류면 scale_pos_weight를 4.0, 회귀면 1.0 (예시)
+        float scaleWeight = isClassification ? 4.0f : 1.0f;
+        float minChild = isClassification ? 3.0f : 5.0f;    // 분류는 좀 더 디테일하게, 회귀는 보수적으로
+
+        for (auto depth : candidateDepths)
         {
-            for (auto eta : candidateEtas) 
+            for (auto eta : candidateEtas)
             {
-                for (auto round : candidateRounds) 
-                {
-                    configs.push_back({ idCounter++, depth, eta, round, targetObjective, targetMetric });
-                }
+                // 라운드 수는 eta에 따라 자동 조절 (eta가 작으면 많이)
+                int rounds = (eta < 0.04f) ? 500 : 300;
+
+                ModelConfig cfg;
+                cfg.id = idCounter++;
+                cfg.maxDepth = depth;
+                cfg.eta = eta;
+                cfg.numRound = rounds;
+                cfg.objective = obj;
+                cfg.evalMetric = metric;
+
+                // 추가 파라미터 (고정값 사용 또는 루프 추가 가능)
+                cfg.minChildWeight = minChild;
+                cfg.scalePosWeight = scaleWeight;
+                cfg.subsample = 0.8f;
+                cfg.colsample = 0.8f;
+
+                configs.push_back(cfg);
             }
         }
         return configs;
     }
+
+    // Final. 그리드 조합 모두 돌려서 csv파일 떨구는 함수(하이퍼 파리미터 종류, 승인 카운트, 평균수익률, 평균 부도확률, 샤프 레이시오)
+
+    ExperimentResult RunGridSearch(
+        const CsvLoader::Dataset& dataset,
+        float splitRatio,
+        float pdThreshold,
+        float estReturnThreshold)
+    {
+        // 1) CSV 파일 준비
+        std::ofstream csvFile("grid_search_log.csv");
+        // 헤더 작성
+        csvFile << "Iter,Cls_ID,Cls_Depth,Cls_Eta,Reg_ID,Reg_Depth,Reg_Eta,"
+            << "Approved_Cnt,Avg_Return,Avg_PD,Sharpe_Ratio\n";
+
+        std::cout << "\n>>> [Grid Search] Generating Configurations...\n";
+
+        auto clsConfigs = GenerateGrid(true);
+        auto regConfigs = GenerateGrid(false);
+
+        int totalIter = (int)(clsConfigs.size() * regConfigs.size());
+        std::cout << " -> Total Combinations: " << totalIter << "\n";
+        std::cout << " -> Log File: 'grid_search_log.csv'\n\n";
+
+        ExperimentResult bestResult;
+        bestResult.bestMetrics.sharpeRatio = -999.0f; // 초기값
+
+        int currentIter = 0;
+
+        // 출력 포맷 설정
+        std::cout << std::fixed << std::setprecision(4);
+
+        // 2) 이중 루프
+        for (const auto& cConf : clsConfigs)
+        {
+            for (const auto& rConf : regConfigs)
+            {
+                currentIter++;
+
+                // 모델 검증 실행
+                ValidationMetrics metrics = RunDualModelValidation(
+                    dataset, cConf, rConf,
+                    splitRatio, pdThreshold, estReturnThreshold
+                );
+
+                // [Console Output] 요청하신 포맷
+                // [하이퍼파라미터] [추정수익률] [부도확률] [샤프레이시오]
+                std::cout << "[" << currentIter << "/" << totalIter << "] "
+                    << "[C:d" << cConf.maxDepth << " e" << std::setprecision(2) << cConf.eta << " | "
+                    << "R:d" << rConf.maxDepth << " e" << std::setprecision(2) << rConf.eta << "] "
+                    << "Ret: " << std::setprecision(4) << metrics.avgReturn << " "
+                    << "PD: " << std::setprecision(4) << metrics.avgPD << " "
+                    << "-> Sharpe: " << std::setprecision(5) << metrics.sharpeRatio;
+
+                // 갱신 여부 체크
+                if (metrics.sharpeRatio > bestResult.bestMetrics.sharpeRatio)
+                {
+                    bestResult.bestMetrics = metrics;
+                    bestResult.bestClsConfig = cConf;
+                    bestResult.bestRegConfig = rConf;
+                    std::cout << "  [★ NEW BEST]"; // 갱신 알림
+                }
+                std::cout << "\n";
+
+                // [CSV Output] 파일 저장
+                csvFile << currentIter << ","
+                    << cConf.id << "," << cConf.maxDepth << "," << cConf.eta << ","
+                    << rConf.id << "," << rConf.maxDepth << "," << rConf.eta << ","
+                    << metrics.approvedCount << ","
+                    << metrics.avgReturn << ","
+                    << metrics.avgPD << ","
+                    << metrics.sharpeRatio << "\n";
+                csvFile.flush();
+            }
+        }
+
+        csvFile.close();
+        return bestResult;
+    }
+
 
     // --------------------------------------------------------------------------
     // 1. 모델 구조 분석
@@ -174,7 +289,7 @@ public:
     );
 
     // 2-Ver2. 추정수익률 + 부도확률까지 필터링한 후 샤프지수 계산하기
-    float RunDualModelValidation(
+    ValidationMetrics RunDualModelValidation(
         const CsvLoader::Dataset& dataset, // 전체 데이터셋 객체 전달
         const ModelConfig& clsConfig,     // 분류 모델 설정
         const ModelConfig& regConfig,     // 회귀 모델 설정
@@ -227,6 +342,13 @@ private:
         SAFE_XGBOOST(XGBoosterSetParam(hBooster, "objective", config.objective.c_str()));
         SAFE_XGBOOST(XGBoosterSetParam(hBooster, "max_depth", std::to_string(config.maxDepth).c_str()));
         SAFE_XGBOOST(XGBoosterSetParam(hBooster, "eta", std::to_string(config.eta).c_str()));
+
+
+        // [추가 파라미터 바인딩]
+        SAFE_XGBOOST(XGBoosterSetParam(hBooster, "min_child_weight", std::to_string(config.minChildWeight).c_str()));
+        SAFE_XGBOOST(XGBoosterSetParam(hBooster, "scale_pos_weight", std::to_string(config.scalePosWeight).c_str()));
+        SAFE_XGBOOST(XGBoosterSetParam(hBooster, "subsample", std::to_string(config.subsample).c_str()));
+        SAFE_XGBOOST(XGBoosterSetParam(hBooster, "colsample_bytree", std::to_string(config.colsample).c_str()));
 
         // 사용할 스레드 수 계산
         // 사용할 스레드 수 안전하게 계산

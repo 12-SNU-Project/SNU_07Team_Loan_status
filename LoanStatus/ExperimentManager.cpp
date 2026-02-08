@@ -117,7 +117,7 @@ void ExperimentManager::RunSingleModelValidation(const CsvLoader::Dataset& datas
 }
 
 // 2-Ver2. 추정수익률 + 부도확률까지 필터링한 후 샤프지수 계산하기
-float ExperimentManager::RunDualModelValidation(
+ValidationMetrics ExperimentManager::RunDualModelValidation(
     const CsvLoader::Dataset & dataset, // 전체 데이터셋 객체 전달
     const ModelConfig & clsConfig,     // 분류 모델 설정
     const ModelConfig & regConfig,     // 회귀 모델 설정
@@ -166,12 +166,21 @@ float ExperimentManager::RunDualModelValidation(
     // 5. 이중 필터링 적용 (PD < Threshold && Est.Return > Threshold)
     std::vector<bool> isApproved(testSize, false);
     int approvedCount = 0;
+
+    //[추가]
+    double sumApprovedReturn = 0.0; // 평균 수익률 계산용
+    double sumApprovedPD = 0.0;     // 평균 PD 계산용
+
     for (size_t i = 0; i < testSize; ++i)
     {
         if (predPD[i] < pdThreshold && predEstReturn[i] > estReturnThreshold)
         {
             isApproved[i] = true;
             approvedCount++;
+
+            //[추가]
+            sumApprovedReturn += dataset.returns[splitPoint + i];
+            sumApprovedPD += predPD[i];
         }
     }
 
@@ -181,17 +190,35 @@ float ExperimentManager::RunDualModelValidation(
 
     float sharpe = CalculateSharpeRatio(testActualReturns, testBonds, isApproved);
 
+
+    ValidationMetrics result;
+    result.sharpeRatio = sharpe;
+    result.approvedCount = approvedCount;
+
+    if (approvedCount > 0) 
+    {
+        result.avgReturn = (float)(sumApprovedReturn / approvedCount);
+        result.avgPD = (float)(sumApprovedPD / approvedCount);
+    }
+    else 
+    {
+        result.avgReturn = 0.0f;
+        result.avgPD = 0.0f;
+    }
+
     // 7. 결과 요약 출력
     std::cout << "================ [Dual Model Result] ================\n";
-    std::cout << "  - Approved: " << approvedCount << " / " << testSize << "(" << (approvedCount / testSize) * 100.f << ")" << "\n";
+    std::cout << "  - Approved: " << approvedCount << " / " << testSize << "(" << ((float)approvedCount / testSize * 100.f) << "%)" << "\n";
     std::cout << "  - PD Threshold: " << pdThreshold << " | Est.Return Threshold: " << estReturnThreshold << "\n";
     std::cout << "  - FINAL SHARPE RATIO: " << sharpe << "\n";
     std::cout << "=====================================================\n";
 
-    // 메모리 해제
+    //8. 메모리 해제
     XGDMatrixFree(hFullCls); XGDMatrixFree(hFullReg);
     XGDMatrixFree(hTrainCls); XGDMatrixFree(hTestCls);
     XGDMatrixFree(hTrainReg); XGDMatrixFree(hTestReg);
     XGBoosterFree(hBoosterCls); XGBoosterFree(hBoosterReg);
-    return sharpe;
+
+    //[추가]
+    return result;
 }
