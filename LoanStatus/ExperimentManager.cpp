@@ -1,471 +1,554 @@
 #include "pch.h"
-#include <random>
 #include "CsvLoader.h"
 #include "ExperimentManager.h"
 
-ExperimentResult ExperimentManager::RunGridSearchFixed(const CsvLoader::Dataset& dataset, float splitRatio, float pdThreshold, float estReturnThreshold)
+// =========================================================
+// [공통 함수] 학습 및 예측 데이터 준비
+// =========================================================
+ExperimentContext ExperimentManager::PrepareExperiment(const CsvLoader::DataSet& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio)
 {
-    // 1) CSV 파일 준비
-    std::ofstream csvFile("grid_serach_fixed.csv");
-    // 헤더 작성
-    csvFile << "Iter,Cls_ID,Cls_Depth,Cls_Eta,Reg_ID,Reg_Depth,Reg_Eta,"
-        << "Approved_Cnt,Avg_Return,Avg_PD,Sharpe_Ratio\n";
+    ExperimentContext ctx;
 
-    std::cout << "\n>>> [Grid Search] Generating Configurations...\n";
+    // 1. 데이터 분할 크기 계산
+    auto totalRows = dataset.rows;
+    auto splitPoint = static_cast<size_t>(totalRows * splitRatio);
+    ctx.testSize = totalRows - splitPoint;
 
-    auto clsConfigs = GenerateGrid(true);
-    auto regConfigs = GenerateGrid(false);
-
-    int totalIter = (int)(clsConfigs.size() * regConfigs.size());
-    std::cout << ">>> Total Combinations: " << totalIter << "\n";
-    std::cout << ">>> Log File: 'grid_search_fixed.csv'\n\n";
-
-    ExperimentResult bestResult;
-    bestResult.bestMetrics.sharpeRatio = -999.0f; // 초기값
-
-    int currentIter = 0;
-    std::cout << std::fixed << std::setprecision(4);
-
-    for (const auto& cConf : clsConfigs)
+    if (ctx.testSize <= 0)
     {
-        for (const auto& rConf : regConfigs)
-        {
-            currentIter++;
-
-            // 모델 엔진
-            ValidationMetrics metrics = RunDualModelValidation(dataset, cConf, rConf, splitRatio, pdThreshold, estReturnThreshold);
-
-            // [하이퍼파라미터] [추정수익률] [부도확률] [샤프레이시오]
-            std::cout << "[" << currentIter << "/" << totalIter << "]\n"
-                << "\n>>> C:d" << cConf.maxDepth << " e" << std::setprecision(2) << cConf.eta 
-                << "\n>>> R:d" << rConf.maxDepth << " e" << std::setprecision(2) << rConf.eta
-                << "\n>>> Ret: " << std::setprecision(4) << metrics.avgReturn
-                << "\n>>> PD: " << std::setprecision(4) << metrics.avgPD
-                << "\n>>> Sharpe: " << std::setprecision(5) << metrics.sharpeRatio;
-
-            // 갱신 여부 체크
-            if (metrics.sharpeRatio > bestResult.bestMetrics.sharpeRatio)
-            {
-                bestResult.bestMetrics = metrics;
-                bestResult.bestClsConfig = cConf;
-                bestResult.bestRegConfig = rConf;
-                std::cout << "  [★ NEW BEST]"; // 갱신 알림
-            }
-            std::cout << "\n";
-
-            // [CSV Output] 파일 저장
-            csvFile << currentIter << ","
-                << cConf.id << "," << cConf.maxDepth << "," << cConf.eta << ","
-                << rConf.id << "," << rConf.maxDepth << "," << rConf.eta << ","
-                << metrics.approvedCount << ","
-                << metrics.avgReturn << ","
-                << metrics.avgPD << ","
-                << metrics.sharpeRatio << "\n";
-            csvFile.flush();
-        }
+        std::cerr << "Error: Test set size is 0." << std::endl;
+        std::exit(1);
     }
 
-    csvFile.close();
-    return bestResult;
-}
-
-ExperimentResult ExperimentManager::RunGridSearchAuto(const CsvLoader::Dataset& dataset, float splitRatio)
-{
-    std::ofstream csvFile("grid_search_auto.csv");
-    csvFile << "Iter,Cls_Depth,Cls_Eta,Reg_Depth,Reg_Eta,"
-        << "Best_PD_Thresh,Best_Ret_Thresh,"
-        << "Approved_Cnt,Avg_Return,Avg_PD,Sharpe_Ratio\n";
-
-    std::cout << "\n>>> [Grid Search] Generating Configurations...\n";
-    auto clsConfigs = GenerateGrid(true);
-    auto regConfigs = GenerateGrid(false);
-
-    int totalIter = (int)(clsConfigs.size() * regConfigs.size());
-    std::cout << ">>> Total Combinations: " << totalIter << "\n";
-    std::cout << ">>> Log File: 'grid_search_auto.csv'\n\n";
-
-    ExperimentResult bestResult;
-    bestResult.bestMetrics.sharpeRatio = -999.0f;
-
-    int currentIter = 0;
-    std::cout << std::fixed << std::setprecision(4);
-
-    for (const auto& cConf : clsConfigs)
-    {
-        for (const auto& rConf : regConfigs)
-        {
-            currentIter++;
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            //고정된 임계값 없이 호출 -> 내부에서 최적 임계값을 찾아옴
-            ValidationMetrics metrics = RunDualModelValidationAndOptimizeThreshold(
-                dataset, cConf, rConf, splitRatio
-            );
-
-            // 로그 출력 (찾아낸 최적 임계값도 같이 표시)
-            std::cout << "[" << currentIter << "/" << totalIter << "] "
-                << "C(d" << cConf.maxDepth << " e" << std::setprecision(2) << cConf.eta << ") "
-                << "R(d" << rConf.maxDepth << " e" << std::setprecision(2) << rConf.eta << ") "
-                << "| Th(" << std::setprecision(2) << metrics.bestPDThreshold << "/" << metrics.bestReturnThreshold << ") "
-                << "-> Sharpe: " << std::setprecision(5) << metrics.sharpeRatio;
-
-            if (metrics.sharpeRatio > bestResult.bestMetrics.sharpeRatio)
-            {
-                bestResult.bestMetrics = metrics;
-                bestResult.bestClsConfig = cConf;
-                bestResult.bestRegConfig = rConf;
-                std::cout << " [★ NEW BEST]";
-            }
-            std::cout << "\n";
-
-            // CSV 저장
-            csvFile << currentIter << ","
-                << cConf.maxDepth << "," << cConf.eta << ","
-                << rConf.maxDepth << "," << rConf.eta << ","
-                << metrics.bestPDThreshold << "," << metrics.bestReturnThreshold << ","
-                << metrics.approvedCount << ","
-                << metrics.avgReturn << ","
-                << metrics.avgPD << ","
-                << metrics.sharpeRatio << "\n";
-            csvFile.flush();
-        }
-    }
-
-    csvFile.close();
-    return bestResult;
-}
-
-ValidationMetrics ExperimentManager::RunDualModelValidationAndOptimizeThreshold(const CsvLoader::Dataset& dataset, const ModelConfig& clsConfig, const ModelConfig& regConfig, float splitRatio)
-{
-    //모델 학습
-    size_t totalRows = dataset.rows;
-    size_t splitPoint = static_cast<size_t>(totalRows * splitRatio);
-    size_t testSize = totalRows - splitPoint;
-
+    // 2. DMatrix 생성
     DMatrixHandle hFullCls, hFullReg;
-    const float nanVal = std::numeric_limits<float>::quiet_NaN();
+    const auto nanVal = std::numeric_limits<float>::quiet_NaN();
     SAFE_XGBOOST(XGDMatrixCreateFromMat(dataset.features.data(), totalRows, dataset.cols, nanVal, &hFullCls));
     SAFE_XGBOOST(XGDMatrixCreateFromMat(dataset.features.data(), totalRows, dataset.cols, nanVal, &hFullReg));
     SAFE_XGBOOST(XGDMatrixSetFloatInfo(hFullCls, "label", dataset.labels.data(), totalRows));
     SAFE_XGBOOST(XGDMatrixSetFloatInfo(hFullReg, "label", dataset.returns.data(), totalRows));
 
+    // 3. Slice (Train/Test)
     std::vector<int> allIndices(totalRows);
     std::iota(allIndices.begin(), allIndices.end(), 0);
+
     DMatrixHandle hTrainCls, hTestCls, hTrainReg, hTestReg;
     SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullCls, allIndices.data(), splitPoint, &hTrainCls));
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullCls, allIndices.data() + splitPoint, testSize, &hTestCls));
+    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullCls, allIndices.data() + splitPoint, ctx.testSize, &hTestCls));
     SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullReg, allIndices.data(), splitPoint, &hTrainReg));
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullReg, allIndices.data() + splitPoint, testSize, &hTestReg));
+    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullReg, allIndices.data() + splitPoint, ctx.testSize, &hTestReg));
 
-    BoosterHandle hBoosterCls = TrainBooster(hTrainCls, clsConfig);
-    BoosterHandle hBoosterReg = TrainBooster(hTrainReg, regConfig);
+    // 4. 모델 학습
+    std::cout << ">>> [Common] Training Best Models...\n";
+    auto hBoosterCls = TrainBooster(hTrainCls, bestClsConfig);
+    auto hBoosterReg = TrainBooster(hTrainReg, bestRegConfig);
 
-    const float* predPD, * predEstReturn;
+    // 5. 예측 수행
+    std::cout << ">>> [Common] Predicting Test Set (" << ctx.testSize << " rows)...\n";
+    const float* predPD_ptr;
+    const float* predRet_ptr;
     bst_ulong outLen;
-    SAFE_XGBOOST(XGBoosterPredict(hBoosterCls, hTestCls, 0, 0, 0, &outLen, &predPD));
-    SAFE_XGBOOST(XGBoosterPredict(hBoosterReg, hTestReg, 0, 0, 0, &outLen, &predEstReturn));
 
+    SAFE_XGBOOST(XGBoosterPredict(hBoosterCls, hTestCls, 0, 0, 0, &outLen, &predPD_ptr));
+    SAFE_XGBOOST(XGBoosterPredict(hBoosterReg, hTestReg, 0, 0, 0, &outLen, &predRet_ptr));
 
-    double sumAbsoluteError = 0.0; // 회귀 모델 오차 계산용
-    int correctCount = 0;         // 분류 모델 정답 개수용
+    // 6. 결과 데이터를 벡터로 복사
+    ctx.predPD.assign(predPD_ptr, predPD_ptr + outLen);
+    ctx.predEstReturn.assign(predRet_ptr, predRet_ptr + outLen);
 
-    // 테스트 데이터 전체를 돌면서 채점
-    for (size_t i = 0; i < testSize; ++i)
+    // 정답 데이터 복사
+    ctx.actualReturns.assign(dataset.returns.begin() + splitPoint, dataset.returns.end());
+    ctx.bondYields.assign(dataset.bondYields.begin() + splitPoint, dataset.bondYields.end());
+
+    // 7. 메모리 정리
+    XGDMatrixFree(hFullCls); XGDMatrixFree(hFullReg);
+    XGDMatrixFree(hTrainCls); XGDMatrixFree(hTestCls);
+    XGDMatrixFree(hTrainReg); XGDMatrixFree(hTestReg);
+    XGBoosterFree(hBoosterCls); XGBoosterFree(hBoosterReg);
+
+    return ctx;
+}
+
+ExperimentResult ExperimentManager::RunGridSearchFixed(const CsvLoader::DataSet& dataset, float splitRatio, float pdThreshold, float estReturnThreshold)
+{
+    return ExperimentResult();
+}
+
+// =========================================================
+// [Mode 1] Single 10k Sample Heatmap
+// =========================================================
+void ExperimentManager::RunHeatmap_SingleSample10k(const CsvLoader::DataSet& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio)
+{
+    auto ctx = PrepareExperiment(dataset, bestClsConfig, bestRegConfig, splitRatio);
+
+    std::cout << "\n======================================================\n";
+    std::cout << ">>> [Mode 1] Single 10k Sample Heatmap <<<\n";
+    std::cout << "======================================================\n";
+
+    // 10k 샘플링
+    const size_t targetSampleSize = 10000;
+    auto finalSampleSize = std::min(targetSampleSize, ctx.testSize);
+
+    std::vector<int> indices(ctx.testSize);
+    std::iota(indices.begin(), indices.end(), 0);
+
+    std::random_device rd;
+    std::mt19937 g(rd());
+    std::shuffle(indices.begin(), indices.end(), g);
+    indices.resize(finalSampleSize);
+
+    std::vector<float> sampActual, sampBonds;
+    sampActual.reserve(finalSampleSize);
+    sampBonds.reserve(finalSampleSize);
+
+    for (auto idx : indices)
     {
-        // 1. 회귀(Return) 모델 채점: RMSE (얼마나 틀렸나?)
-        float actualRet = dataset.returns[splitPoint + i];
-        float diff = predEstReturn[i] - actualRet;
-        sumAbsoluteError += std::abs(diff);;
-
-        // 2. 분류(PD) 모델 채점: Accuracy (부도 여부 맞췄나?)
-        // (PD가 0.5보다 크면 부도(1), 작으면 정상(0)으로 간주하고 채점)
-        float actualLabel = dataset.labels[splitPoint + i];
-        int predictedLabel = (predPD[i] > 0.5f) ? 1 : 0;
-
-        if (predictedLabel == (int)actualLabel) 
-        {
-            correctCount++;
-        }
+        sampActual.push_back(ctx.actualReturns[idx]);
+        sampBonds.push_back(ctx.bondYields[idx]);
     }
 
-    double mae = sumAbsoluteError / testSize;
-    double accuracy = (double)correctCount / testSize * 100.0;
+    std::cout << ">>> Generating Heatmap Data...\n";
+    std::ofstream outFile("heatmap_data_10k.csv");
+    outFile << "PD_Threshold,Return_Threshold,Sharpe_Ratio,Approved_Count,Approved_Rate\n";
 
-    // 콘솔에 성적표 출력 (첫 번째 이터레이션에서만 출력하거나, 필요시 매번 출력)
-    std::cout << "\n>>> [Basic Performance Report] <<<\n";
-    std::cout << "1. Return Model MAE  : " << mae << "\n";
-    std::cout << "2. PD Model Accuracy : " << accuracy << "%\n";
-    std::cout << "--------------------------------------\n";
+    auto totalCombinations = 0;
 
-    double sumPD = 0, minPD = 1.0, maxPD = 0.0;
-    double sumRet = 0, minRet = 1.0, maxRet = -1.0;
-
-    // 샘플링
-    /*for (size_t i = 0; i < testSize; ++i) 
+    for (auto i = 1; i <= 40; ++i)
     {
-        if (predPD[i] < minPD) minPD = predPD[i];
-        if (predPD[i] > maxPD) maxPD = predPD[i];
-        sumPD += predPD[i];
-
-        if (predEstReturn[i] < minRet) minRet = predEstReturn[i];
-        if (predEstReturn[i] > maxRet) maxRet = predEstReturn[i];
-        sumRet += predEstReturn[i];
-    }*/
-
-    //// 첫 번째 이터레이션에서만 로그 출력
-    //static bool bPrintedDebug = false;
-    //if (!bPrintedDebug) 
-    //{
-    //    std::cout << "\n>>>[DEBUG MODEL OUTPUT]\n";
-    //    std::cout << " - PD Range     : " << minPD << " ~ " << maxPD << " (Avg: " << (double)(sumPD / testSize) << ")\n";
-    //    std::cout << " - Return Range : " << minRet << " ~ " << maxRet << " (Avg: " << (double)(sumRet / testSize) << ")\n";
-    //    bPrintedDebug = true;
-    //}
-
-
-    // --- 임계값 최적화 ---
-    // 학습된 모델(예측값)을 고정해두고, 다양한 임계값을 대입해 최적의 조합을 찾음
-
-    ValidationMetrics bestLocalMetrics;
-    bestLocalMetrics.sharpeRatio = -999.0f;
-    bestLocalMetrics.approvedCount = 0;
-
-    // 실제값 데이터 준비 (반복문 밖에서 한 번만 로드)
-    std::vector<float> testActualReturns(dataset.returns.begin() + splitPoint, dataset.returns.end());
-    std::vector<float> testBonds(dataset.bondYields.begin() + splitPoint, dataset.bondYields.end());
-    std::vector<bool> isApproved(testSize);
-
-    // 검색할 범위 설정
-    std::vector<float> pdCandidates =  { 0.f, 0.05f, 0.10f, 0.15f, 0.20f, 0.25f};
-    std::vector<float> retCandidates = { 0.02f, 0.04f, 0.05f, 0.06f, 0.08f };
-
-    for (float pdTh : pdCandidates)
-    {
-        for (float retTh : retCandidates)
+        auto pdTh = i * 0.01f;
+        for (auto j = 1; j <= 20; ++j)
         {
-            int approvedCount = 0;
-            double sumRet = 0.0;
-            double sumPD = 0.0;
+            auto retTh = j * 0.005f;
 
-            // 필터링 시뮬레이션
-            for (size_t i = 0; i < testSize; ++i)
+            std::vector<bool> approval;
+            approval.reserve(finalSampleSize);
+            auto count = 0;
+
+            for (auto idx : indices)
             {
-                bool pass = (predPD[i] < pdTh && predEstReturn[i] > retTh);
-                isApproved[i] = pass;
+                auto pass = (ctx.predPD[idx] < pdTh) && (ctx.predEstReturn[idx] > retTh);
+                approval.push_back(pass);
+                if (pass) count++;
+            }
+
+            auto sharpe = 0.0f;
+            if (count > 10)
+            {
+                sharpe = CalculateSharpeRatio(sampActual, sampBonds, approval);
+            }
+
+            auto rate = (float)count / finalSampleSize * 100.0f;
+            outFile << pdTh << "," << retTh << "," << sharpe << "," << count << "," << rate << "\n";
+            totalCombinations++;
+        }
+    }
+    outFile.close();
+    std::cout << ">>> Heatmap Saved (" << totalCombinations << " combinations).\n";
+
+    // 순열 검정
+    std::vector<float> sampPredPD, sampPredRet;
+    sampPredPD.reserve(finalSampleSize);
+    sampPredRet.reserve(finalSampleSize);
+
+    for (auto idx : indices)
+    {
+        sampPredPD.push_back(ctx.predPD[idx]);
+        sampPredRet.push_back(ctx.predEstReturn[idx]);
+    }
+    PerformRandomPermutationTest(sampPredPD, sampPredRet, sampActual, sampBonds, 0.20f, 0.075f, 1000);
+}
+
+// =========================================================
+// [Mode 2] Reliability Check
+// =========================================================
+void ExperimentManager::RunReliabilityCheck_Bootstrap(const CsvLoader::DataSet& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio)
+{
+    auto ctx = PrepareExperiment(dataset, bestClsConfig, bestRegConfig, splitRatio);
+
+    std::cout << "\n======================================================\n";
+    std::cout << ">>> [Mode 2] Reliability Check (Bootstrapping) <<<\n";
+    std::cout << "======================================================\n";
+
+    const auto numSimulations = 1000;
+    const size_t sampleSize = 10000;
+    const auto pdTh = 0.20f;    // 고정 파라미터
+    const auto retTh = 0.075f;  // 고정 파라미터
+
+    std::ofstream outFile("bootstrapping_detailed_results.csv");
+    outFile << "Sim_ID,Sharpe_Ratio,Mean_Excess_Return,Std_Dev,Approved_Count,Approved_Rate\n";
+
+    std::random_device rd;
+    std::mt19937 g(rd());
+    std::vector<int> pool(ctx.testSize);
+    std::iota(pool.begin(), pool.end(), 0);
+
+    for (auto s = 1; s <= numSimulations; ++s)
+    {
+        std::shuffle(pool.begin(), pool.end(), g);
+
+        auto sumExcess = 0.0;
+        auto sumSqExcess = 0.0;
+        auto approvedCount = 0;
+
+        std::vector<float> subActual, subBonds;
+        std::vector<bool> subApproval;
+        subActual.reserve(sampleSize); subBonds.reserve(sampleSize); subApproval.reserve(sampleSize);
+
+        for (size_t k = 0; k < sampleSize; ++k)
+        {
+            auto idx = pool[k];
+            auto pass = (ctx.predPD[idx] < pdTh) && (ctx.predEstReturn[idx] > retTh);
+
+            subActual.push_back(ctx.actualReturns[idx]);
+            subBonds.push_back(ctx.bondYields[idx]);
+            subApproval.push_back(pass);
+
+            if (pass)
+            {
+                auto excess = (double)(ctx.actualReturns[idx] - ctx.bondYields[idx]);
+                sumExcess += excess;
+                sumSqExcess += excess * excess;
+                approvedCount++;
+            }
+        }
+
+        auto meanExcess = 0.0;
+        auto stdDev = 0.0;
+        auto sharpe = 0.0f;
+
+        if (approvedCount >= 10)
+        {
+            // 전체 샘플 사이즈 기준 통계 (포트폴리오 관점)
+            meanExcess = sumExcess / (double)sampleSize;
+            auto meanSq = sumSqExcess / (double)sampleSize;
+            auto var = meanSq - (meanExcess * meanExcess);
+            stdDev = (var > 0) ? std::sqrt(var) : 0.0;
+
+            sharpe = CalculateSharpeRatio(subActual, subBonds, subApproval);
+        }
+
+        auto rate = (float)approvedCount / sampleSize * 100.0f;
+        outFile << s << "," << sharpe << "," << meanExcess << "," << stdDev << "," << approvedCount << "," << rate << "\n";
+
+        if (s % 100 == 0) std::cout << "Sim " << s << " / " << numSimulations << "\n";
+    }
+    outFile.close();
+    std::cout << ">>> Results saved to 'bootstrapping_detailed_results.csv'\n";
+}
+
+// =========================================================
+// [Mode 3] Robust Heatmap
+// =========================================================
+void ExperimentManager::RunHeatmap_RobustBootstrap(const CsvLoader::DataSet& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio)
+{
+    auto ctx = PrepareExperiment(dataset, bestClsConfig, bestRegConfig, splitRatio);
+
+    std::cout << "\n======================================================\n";
+    std::cout << ">>> [Mode 3] Robust Heatmap (1,000 Bootstraps) <<<\n";
+    std::cout << "======================================================\n";
+
+    struct GridStats
+    {
+        double sumSharpe = 0;
+        double sumMean = 0;
+        double sumStd = 0;
+        double sumCount = 0;
+    };
+    std::vector<GridStats> accumulator(40 * 20);
+
+    const auto numSimulations = 1000;
+    const size_t sampleSize = 10000;
+
+    std::random_device rd;
+    std::mt19937 g(rd());
+    std::vector<int> pool(ctx.testSize);
+    std::iota(pool.begin(), pool.end(), 0);
+
+    for (auto s = 1; s <= numSimulations; ++s)
+    {
+        std::shuffle(pool.begin(), pool.end(), g);
+
+        std::vector<float> curActual, curBonds, curPD, curRet;
+        curActual.reserve(sampleSize); curBonds.reserve(sampleSize);
+        curPD.reserve(sampleSize); curRet.reserve(sampleSize);
+
+        for (size_t k = 0; k < sampleSize; ++k)
+        {
+            auto idx = pool[k];
+            curActual.push_back(ctx.actualReturns[idx]);
+            curBonds.push_back(ctx.bondYields[idx]);
+            curPD.push_back(ctx.predPD[idx]);
+            curRet.push_back(ctx.predEstReturn[idx]);
+        }
+
+        for (auto i = 1; i <= 40; ++i)
+        {
+            auto pdTh = i * 0.01f;
+            for (auto j = 1; j <= 20; ++j)
+            {
+                auto retTh = j * 0.005f;
+                auto gridIdx = (i - 1) * 20 + (j - 1);
+
+                auto sumEx = 0.0;
+                auto sumSqEx = 0.0;
+                auto count = 0;
+
+                for (size_t k = 0; k < sampleSize; ++k)
+                {
+                    if (curPD[k] < pdTh && curRet[k] > retTh)
+                    {
+                        auto ex = (double)(curActual[k] - curBonds[k]);
+                        sumEx += ex;
+                        sumSqEx += ex * ex;
+                        count++;
+                    }
+                }
+
+                if (count >= 10)
+                {
+                    auto mean = sumEx / (double)sampleSize;
+                    auto var = (sumSqEx / (double)sampleSize) - (mean * mean);
+                    auto std = (var > 0) ? std::sqrt(var) : 0.0;
+
+                    if (std > 1e-9)
+                    {
+                        accumulator[gridIdx].sumSharpe += (mean / std);
+                        accumulator[gridIdx].sumMean += mean;
+                        accumulator[gridIdx].sumStd += std;
+                        accumulator[gridIdx].sumCount += count;
+                    }
+                }
+            }
+        }
+        if (s % 100 == 0) std::cout << "Sim " << s << "\n";
+    }
+
+    std::ofstream outFile("robust_heatmap_detailed.csv");
+    outFile << "PD_Threshold,Return_Threshold,Avg_Sharpe,Avg_Return,Avg_StdDev,Avg_Approved_Count,Avg_Approved_Rate\n";
+
+    for (auto i = 1; i <= 40; ++i)
+    {
+        auto pdTh = i * 0.01f;
+        for (auto j = 1; j <= 20; ++j)
+        {
+            auto retTh = j * 0.005f;
+            auto idx = (i - 1) * 20 + (j - 1);
+            auto& acc = accumulator[idx];
+
+            auto avgCnt = acc.sumCount / numSimulations;
+            outFile << pdTh << "," << retTh << ","
+                << acc.sumSharpe / numSimulations << ","
+                << acc.sumMean / numSimulations << ","
+                << acc.sumStd / numSimulations << ","
+                << avgCnt << "," << (avgCnt / sampleSize * 100.0) << "\n";
+        }
+    }
+    outFile.close();
+    std::cout << ">>> Robust Heatmap saved to 'robust_heatmap_detailed.csv'\n";
+}
+
+// =========================================================
+// [Mode 4] Full Test Set Heatmap
+// =========================================================
+void ExperimentManager::RunHeatmap_FullTestSet(const CsvLoader::DataSet& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio)
+{
+    auto ctx = PrepareExperiment(dataset, bestClsConfig, bestRegConfig, splitRatio);
+
+    std::cout << "\n======================================================\n";
+    std::cout << ">>> [Mode 4] Full Test Set Heatmap (No Sampling) <<<\n";
+    std::cout << "======================================================\n";
+
+    std::ofstream outFile("heatmap_full_testset.csv");
+    outFile << "PD_Threshold,Return_Threshold,Sharpe_Ratio,Mean_Excess_Return,Std_Dev,Approved_Count,Approved_Rate\n";
+
+    std::vector<bool> fullApproval;
+    fullApproval.reserve(ctx.testSize);
+
+    for (auto i = 1; i <= 40; ++i)
+    {
+        auto pdTh = i * 0.01f;
+        for (auto j = 1; j <= 20; ++j)
+        {
+            auto retTh = j * 0.005f;
+
+            fullApproval.clear();
+            auto sumEx = 0.0;
+            auto sumSqEx = 0.0;
+            auto count = 0;
+
+            for (size_t k = 0; k < ctx.testSize; ++k)
+            {
+                auto pass = (ctx.predPD[k] < pdTh) && (ctx.predEstReturn[k] > retTh);
+                fullApproval.push_back(pass);
+
                 if (pass)
                 {
-                    approvedCount++;
-                    sumRet += dataset.returns[splitPoint + i];
-                    sumPD += predPD[i];
+                    auto ex = (double)(ctx.actualReturns[k] - ctx.bondYields[k]);
+                    sumEx += ex;
+                    sumSqEx += ex * ex;
+                    count++;
                 }
             }
 
-            // 너무 적게 승인되면 통계적 의미가 없으므로 스킵 (예: 10개 미만)
-            if (approvedCount < 10) continue;
+            auto mean = 0.0;
+            auto std = 0.0;
+            auto sharpe = 0.0f;
 
-            float currentSharpe = CalculateSharpeRatioVer2(testActualReturns, testBonds, isApproved);
-
-            // 현재 모델 내에서 최고의 임계값 갱신
-            if (currentSharpe > bestLocalMetrics.sharpeRatio)
+            if (count >= 10)
             {
-                bestLocalMetrics.sharpeRatio = currentSharpe;
-                bestLocalMetrics.bestPDThreshold = pdTh;
-                bestLocalMetrics.bestReturnThreshold = retTh;
-                bestLocalMetrics.approvedCount = approvedCount;
-                bestLocalMetrics.avgReturn = (float)(sumRet / approvedCount);
-                bestLocalMetrics.avgPD = (float)(sumPD / approvedCount);
+                // 분모를 전체 Test Size로 설정
+                mean = sumEx / (double)ctx.testSize;
+                auto var = (sumSqEx / (double)ctx.testSize) - (mean * mean);
+                std = (var > 0) ? std::sqrt(var) : 0.0;
+
+                sharpe = CalculateSharpeRatio(ctx.actualReturns, ctx.bondYields, fullApproval);
             }
+
+            auto rate = (float)count / ctx.testSize * 100.0f;
+            outFile << pdTh << "," << retTh << "," << sharpe << "," << mean << "," << std << "," << count << "," << rate << "\n";
         }
+        if (i % 10 == 0) std::cout << "PD " << i * 0.01f << " done\n";
     }
+    outFile.close();
+    std::cout << ">>> Full Test Set Heatmap Saved.\n";
 
-    // 메모리 해제
-    XGDMatrixFree(hFullCls); XGDMatrixFree(hFullReg);
-    XGDMatrixFree(hTrainCls); XGDMatrixFree(hTestCls);
-    XGDMatrixFree(hTrainReg); XGDMatrixFree(hTestReg);
-    XGBoosterFree(hBoosterCls); XGBoosterFree(hBoosterReg);
-
-    // 만약 조건 맞는게 하나도 없었으면 초기값 반환
-    return bestLocalMetrics;
+    // 순열 검정
+    PerformRandomPermutationTest(ctx.predPD, ctx.predEstReturn, ctx.actualReturns, ctx.bondYields, 0.20f, 0.075f, 1000);
 }
 
-void ExperimentManager::RunSingleModelValidation(const CsvLoader::Dataset& dataset, const ModelConfig& clsConfig,  float splitRatio, float pdThreshold)
+BoosterHandle ExperimentManager::TrainBooster(DMatrixHandle hTrain, const ModelConfig& config)
 {
-    std::cout << "\n>>> [Single Model Validation] Sequential Split & Analysis...\n";
+    BoosterHandle hBooster;
+    SAFE_XGBOOST(XGBoosterCreate(&hTrain, 1, &hBooster));
 
-    // 1. 데이터 분할 (Sequential Split)
-    size_t totalRows = dataset.rows;
-    size_t splitPoint = static_cast<size_t>(totalRows * splitRatio);
-    size_t testSize = totalRows - splitPoint;
+    // 파라미터 설정
+    SAFE_XGBOOST(XGBoosterSetParam(hBooster, "verbosity", "0"));
+    SAFE_XGBOOST(XGBoosterSetParam(hBooster, "tree_method", "hist"));
+    SAFE_XGBOOST(XGBoosterSetParam(hBooster, "objective", config.objective.c_str()));
+    SAFE_XGBOOST(XGBoosterSetParam(hBooster, "eval_metric", config.evalMetric.c_str()));
 
-    // 2. DMatrix 생성(분류용만)
-    DMatrixHandle hFullCls;
-    const float nanVal = std::numeric_limits<float>::quiet_NaN();
-    SAFE_XGBOOST(XGDMatrixCreateFromMat(dataset.features.data(), totalRows, dataset.cols, nanVal, &hFullCls));
-    SAFE_XGBOOST(XGDMatrixSetFloatInfo(hFullCls, "label", dataset.labels.data(), totalRows));
+    SAFE_XGBOOST(XGBoosterSetParam(hBooster, "max_depth", std::to_string(config.maxDepth).c_str()));
+    SAFE_XGBOOST(XGBoosterSetParam(hBooster, "eta", std::to_string(config.eta).c_str()));
 
-    // 3. Slice (Train/Test 분리)
-    std::vector<int> allIndices(totalRows);
-    std::iota(allIndices.begin(), allIndices.end(), 0);
-    DMatrixHandle hTrainCls, hTestCls;
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullCls, allIndices.data(), splitPoint, &hTrainCls));
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullCls, allIndices.data() + splitPoint, testSize, &hTestCls));
+    SAFE_XGBOOST(XGBoosterSetParam(hBooster, "min_child_weight", std::to_string(config.minChildWeight).c_str()));
+    SAFE_XGBOOST(XGBoosterSetParam(hBooster, "scale_pos_weight", std::to_string(config.scalePosWeight).c_str()));
+    SAFE_XGBOOST(XGBoosterSetParam(hBooster, "subsample", std::to_string(config.subsample).c_str()));
+    SAFE_XGBOOST(XGBoosterSetParam(hBooster, "colsample_bytree", std::to_string(config.colsample).c_str()));
 
+    // 스레드 설정
+    auto numThreads = std::thread::hardware_concurrency();
+    if (numThreads == 0) numThreads = 4;
+    SAFE_XGBOOST(XGBoosterSetParam(hBooster, "nthread", std::to_string(numThreads).c_str()));
 
-    // 4. 모델 학습
-    std::cout << ">>> Training Model (Past Data)...\n";
-    BoosterHandle hBoosterCls = TrainBooster(hTrainCls, clsConfig);
-
-
-    // 5. 예측 수행
-    std::cout << ">>> Predicting (Future Data)...\n";
-    const float* predPD;
-    bst_ulong outLenCls;
-    SAFE_XGBOOST(XGBoosterPredict(hBoosterCls, hTestCls, 0, 0, 0, &outLenCls, &predPD));
-
-
-    // 6. 필터링 적용
-    std::vector<bool> isApproved(testSize, false);
-    int approvedCount = 0;
-    for (size_t i = 0; i < testSize; ++i)
+    // 학습 수행
+    for (auto i = 0; i < config.numRound; ++i)
     {
-        if (predPD[i] < pdThreshold)
-        {
-            isApproved[i] = true;
-            approvedCount++;
-        }
+        SAFE_XGBOOST(XGBoosterUpdateOneIter(hBooster, i, hTrain));
     }
-
-    // 7. Sharpe Ratio 계산 호출
-    std::vector<float> testActualReturns(dataset.returns.begin() + splitPoint, dataset.returns.end());
-    std::vector<float> testBonds(dataset.bondYields.begin() + splitPoint, dataset.bondYields.end());
-
-    float sharpe = CalculateSharpeRatio(testActualReturns, testBonds, isApproved);
-
-
-    std::cout << "================ [Dual Model Result] ================\n";
-    std::cout << "  - Approved: " << approvedCount << " / " << testSize << "(" << (approvedCount / testSize) * 100.f << ")" << "\n";
-    std::cout << "  - PD Threshold: " << pdThreshold << "\n";
-    std::cout << "  - FINAL SHARPE RATIO: " << sharpe << "\n";
-    std::cout << "=====================================================\n";
-
-    XGDMatrixFree(hFullCls);
-    XGDMatrixFree(hTrainCls);
-    XGDMatrixFree(hTestCls);
+    return hBooster;
 }
 
-// 2-Ver2. 추정수익률 + 부도확률까지 필터링한 후 샤프지수 계산하기
-ValidationMetrics ExperimentManager::RunDualModelValidation(
-    const CsvLoader::Dataset & dataset, // 전체 데이터셋 객체 전달
-    const ModelConfig & clsConfig,     // 분류 모델 설정
-    const ModelConfig & regConfig,     // 회귀 모델 설정
-    float splitRatio,
-    float pdThreshold,         // 부도 확률 임계값
-    float estReturnThreshold  // 추정 수익률 임계값
-)
+std::vector<ModelConfig> ExperimentManager::GenerateGrid(bool isClassification)
 {
-    std::cout << "\n>>> [Dual Model Validation] Starting Analysis...\n";
+    std::vector<ModelConfig> configs;
+    int idCounter = 1;
 
-    // 1. 데이터 분할 (Sequential Split)
-    size_t totalRows = dataset.rows;
-    size_t splitPoint = static_cast<size_t>(totalRows * splitRatio);
-    size_t testSize = totalRows - splitPoint;
+    // 1. 모델 성격(분류 vs 회귀)에 따른 기본 설정
+    std::string obj = isClassification ? "binary:logistic" : "reg:absoluteerror";
+    std::string metric = isClassification ? "auc" : "mae";
 
-    // 2. DMatrix 생성 (분류용/회귀용 레이블 분리)
-    DMatrixHandle hFullCls, hFullReg;
-    const float nanVal = std::numeric_limits<float>::quiet_NaN();
-    SAFE_XGBOOST(XGDMatrixCreateFromMat(dataset.features.data(), totalRows, dataset.cols, nanVal, &hFullCls));
-    SAFE_XGBOOST(XGDMatrixCreateFromMat(dataset.features.data(), totalRows, dataset.cols, nanVal, &hFullReg));
+    // 분류(불균형 데이터)는 양성 클래스에 가중치 4배, 회귀는 1배
+    float scaleWeight = isClassification ? 1.0f : 1.0f;
 
-    // 레이블 바인딩: 분류(loan_status), 회귀(Return)
-    SAFE_XGBOOST(XGDMatrixSetFloatInfo(hFullCls, "label", dataset.labels.data(), totalRows));
-    SAFE_XGBOOST(XGDMatrixSetFloatInfo(hFullReg, "label", dataset.returns.data(), totalRows));
+    // 분류는 미세한 패턴(1.0)까지, 회귀는 굵직한 패턴(5.0)만 학습
+    float minChild = isClassification ? 1.0f : 1.0f;
 
-    // Slice (Train/Test 분리)
-    std::vector<int> allIndices(totalRows);
-    std::iota(allIndices.begin(), allIndices.end(), 0);
-    DMatrixHandle hTrainCls, hTestCls, hTrainReg, hTestReg;
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullCls, allIndices.data(), splitPoint, &hTrainCls));
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullCls, allIndices.data() + splitPoint, testSize, &hTestCls));
-
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullReg, allIndices.data(), splitPoint, &hTrainReg));
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullReg, allIndices.data() + splitPoint, testSize, &hTestReg));
-
-    // 3. 모델 학습 (분류 & 회귀)
-    BoosterHandle hBoosterCls = TrainBooster(hTrainCls, clsConfig);
-    BoosterHandle hBoosterReg = TrainBooster(hTrainReg, regConfig);
-
-    // 4. 예측 수행
-    const float* predPD, * predEstReturn;
-    bst_ulong outLenCls, outLenReg;
-    SAFE_XGBOOST(XGBoosterPredict(hBoosterCls, hTestCls, 0, 0, 0, &outLenCls, &predPD));
-    SAFE_XGBOOST(XGBoosterPredict(hBoosterReg, hTestReg, 0, 0, 0, &outLenReg, &predEstReturn));
-
-    // 5. 이중 필터링 적용 (PD < Threshold && Est.Return > Threshold)
-    std::vector<bool> isApproved(testSize, false);
-    int approvedCount = 0;
-
-    //[추가]
-    double sumApprovedReturn = 0.0; // 평균 수익률 계산용
-    double sumApprovedPD = 0.0;     // 평균 PD 계산용
-
-    for (size_t i = 0; i < testSize; ++i)
+    // 2. 이중 루프로 조합 생성 (Depth x Eta)
+    for (auto depth : candidateDepths)
     {
-        if (predPD[i] < pdThreshold && predEstReturn[i] > estReturnThreshold)
+        for (auto eta : candidateEtas)
         {
-            isApproved[i] = true;
-            approvedCount++;
+            // Eta(학습률)에 반비례하여 Round(반복수) 자동 계산
+            // 공식: 20 / eta 
+            int rounds = static_cast<int>(20.0f / eta);
 
-            //[추가]
-            sumApprovedReturn += dataset.returns[splitPoint + i];
-            sumApprovedPD += predPD[i];
+            // 안전장치 (너무 적거나 많지 않게 범위 제한)
+            if (rounds < 100) rounds = 100;
+            if (rounds > 3000) rounds = 3000;
+
+            ModelConfig cfg;
+            cfg.id = idCounter++;
+            cfg.maxDepth = depth;
+            cfg.eta = eta;
+            cfg.numRound = rounds; // <-- 자동 계산된 값 적용
+
+            cfg.objective = obj;
+            cfg.evalMetric = metric;
+
+            // 모델별 고정/추천 파라미터
+            cfg.minChildWeight = minChild;
+            cfg.scalePosWeight = scaleWeight;
+            cfg.subsample = 0.8f;      // 데이터 행 샘플링 (일반적 추천값)
+            cfg.colsample = 0.8f;      // 컬럼 샘플링 (일반적 추천값)
+
+            configs.push_back(cfg);
         }
     }
-
-    // 6. 실제 Test 셋의 Return/Bond 추출 및 Sharpe Ratio 계산
-    std::vector<float> testActualReturns(dataset.returns.begin() + splitPoint, dataset.returns.end());
-    std::vector<float> testBonds(dataset.bondYields.begin() + splitPoint, dataset.bondYields.end());
-
-    float sharpe = CalculateSharpeRatioVer2(testActualReturns, testBonds, isApproved);
-
-
-    ValidationMetrics result;
-    result.sharpeRatio = sharpe;
-    result.approvedCount = approvedCount;
-
-    if (approvedCount > 0) 
-    {
-        result.avgReturn = (float)(sumApprovedReturn / approvedCount);
-        result.avgPD = (float)(sumApprovedPD / approvedCount);
-    }
-    else 
-    {
-        result.avgReturn = 0.0f;
-        result.avgPD = 0.0f;
-    }
-
-    // 7. 결과 요약 출력
-    std::cout << "================ [Dual Model Result] ================\n";
-    std::cout << "  - Approved: " << approvedCount << " / " << testSize << "(" << ((float)approvedCount / testSize * 100.f) << "%)" << "\n";
-    std::cout << "  - PD Threshold: " << pdThreshold << " | Est.Return Threshold: " << estReturnThreshold << "\n";
-    std::cout << "  - FINAL SHARPE RATIO: " << sharpe << "\n";
-    std::cout << "=====================================================\n";
-
-    //8. 메모리 해제
-    XGDMatrixFree(hFullCls); XGDMatrixFree(hFullReg);
-    XGDMatrixFree(hTrainCls); XGDMatrixFree(hTestCls);
-    XGDMatrixFree(hTrainReg); XGDMatrixFree(hTestReg);
-    XGBoosterFree(hBoosterCls); XGBoosterFree(hBoosterReg);
-
-    //[추가]
-    return result;
+    return configs;
 }
 
-void ExperimentManager::PerformRandomPermutationTest(const std::vector<float>& predPD, const std::vector<float>& predEstReturn, const std::vector<float>& testActualReturns, const std::vector<float>& testBonds, float bestPdTh, float bestRetTh, int numPermutations)
+float ExperimentManager::CalculateSharpeRatio(const std::vector<float>& returns, const std::vector<float>& bondTest, const std::vector<bool>& bApprovals)
+{
+    const auto n = returns.size();
+    if (n <= 1) return 0.0f;
+
+    //초과 수익률
+    std::vector<float> excessReturns;
+    excessReturns.reserve(n);
+
+    auto accExcessVal = (double)0.0; // 정밀도를 위해 double 사용
+
+    for (auto i = 0; i < n; ++i)
+    {
+        auto excessVal = 0.0f;
+        if (bApprovals[i])
+        {
+            excessVal = returns[i] - bondTest[i];
+        }
+        excessReturns.push_back(excessVal);
+        accExcessVal += excessVal;
+    }
+
+    // 1. 평균(Mean) 계산 (분자)
+    // 데이터: 초과 수익률 벡터
+    auto meanExcess = (double)(accExcessVal / static_cast<double>(n));
+
+    // 2. 표준편차(StdDev) 계산 (분모)
+    // 데이터: 위와 동일한 '초과 수익률 벡터' 사용
+    auto sqAccDiff = (double)0.0;
+    for (auto val : excessReturns)
+    {
+        auto diff = val - meanExcess;
+        sqAccDiff += (diff * diff);
+    }
+
+    // 표본 분산 및 표준편차
+    auto variance = sqAccDiff / static_cast<double>(n - 1);
+    auto stdDev = std::sqrt(variance);
+
+    // 3. 샤프지수 반환
+    if (stdDev < 1e-9) return 0.0f; // 0으로 나누기 방지
+
+    return static_cast<float>(meanExcess / stdDev);
+}
+
+void ExperimentManager::PerformRandomPermutationTest(const std::vector<float>& predPD, const std::vector<float>& predRet, const std::vector<float>& actualRet, const std::vector<float>& bondYields, float bestPDTh, float bestRetTh, int iterations)
 {
     std::cout << "\n======================================================\n";
     std::cout << ">>> [Permutation Test] Verifying Best Strategy Significance <<<\n";
     std::cout << "======================================================\n";
 
-    size_t testSize = testActualReturns.size();
+    auto testSize = actualRet.size();
     if (testSize == 0) return;
 
     // 1. [Optimization] 고정된 승인 마스크(Approved Mask) 미리 계산
@@ -473,24 +556,24 @@ void ExperimentManager::PerformRandomPermutationTest(const std::vector<float>& p
     std::vector<bool> fixedApproval;
     fixedApproval.reserve(testSize);
 
-    int approvedCount = 0;
-    for (size_t i = 0; i < testSize; ++i)
+    auto approvedCount = 0;
+    for (auto i = 0; i < testSize; ++i)
     {
         // 아까 찾은 Best Threshold 적용 (PD < 0.20 && Return > 0.075)
-        bool pass = (predPD[i] < bestPdTh) && (predEstReturn[i] > bestRetTh);
+        auto pass = (predPD[i] < bestPDTh) && (predRet[i] > bestRetTh);
         fixedApproval.push_back(pass);
         if (pass) approvedCount++;
     }
 
     // 2. 오리지널(진짜) 샤프지수 계산
-    float originalSharpe = CalculateSharpeRatioVer2(testActualReturns, testBonds, fixedApproval);
+    auto originalSharpe = CalculateSharpeRatio(actualRet, bondYields, fixedApproval);
 
-    std::cout << "Best Config: PD < " << bestPdTh << ", Ret > " << bestRetTh << "\n";
+    std::cout << "Best Config: PD < " << bestPDTh << ", Ret > " << bestRetTh << "\n";
     std::cout << "Original Sharpe Ratio: " << originalSharpe << " (Count: " << approvedCount << ")\n";
-    std::cout << "Running " << numPermutations << " permutations...\n";
+    std::cout << "Running " << iterations << " permutations...\n";
 
     // 3. 순열 검정 루프 (Permutation Loop)
-    int betterCount = 0;
+    auto betterCount = 0;
 
     // 셔플을 위한 인덱스 벡터 생성 (0, 1, 2, ... N-1)
     std::vector<int> indices(testSize);
@@ -504,20 +587,20 @@ void ExperimentManager::PerformRandomPermutationTest(const std::vector<float>& p
     std::vector<float> shuffledReturns(testSize);
     std::vector<float> shuffledBonds(testSize);
 
-    for (int k = 0; k < numPermutations; ++k)
+    for (auto k = 0; k < iterations; ++k)
     {
         // 인덱스 뒤섞기 (데이터의 짝을 유지하기 위함)
         std::shuffle(indices.begin(), indices.end(), g);
 
         // 섞인 인덱스를 기반으로 가짜 데이터(Null Distribution) 생성
-        for (size_t i = 0; i < testSize; ++i)
+        for (auto i = 0; i < testSize; ++i)
         {
-            shuffledReturns[i] = testActualReturns[indices[i]];
-            shuffledBonds[i] = testBonds[indices[i]];
+            shuffledReturns[i] = actualRet[indices[i]];
+            shuffledBonds[i] = bondYields[indices[i]];
         }
 
         // '고정된 전략'이 '무작위 데이터'에서 얼마나 버는지 테스트
-        float randomSharpe = CalculateSharpeRatioVer2(shuffledReturns, shuffledBonds, fixedApproval);
+        auto randomSharpe = CalculateSharpeRatio(shuffledReturns, shuffledBonds, fixedApproval);
 
         // 만약 무작위 데이터로 얻은 수익이 원본보다 좋거나 같다면 카운트
         if (randomSharpe >= originalSharpe)
@@ -526,7 +609,7 @@ void ExperimentManager::PerformRandomPermutationTest(const std::vector<float>& p
         }
 
         // 진행 상황 표시 (10% 단위)
-        if ((k + 1) % (numPermutations / 10) == 0)
+        if ((k + 1) % (iterations / 10) == 0)
         {
             std::cout << ".";
             std::cout.flush();
@@ -536,527 +619,20 @@ void ExperimentManager::PerformRandomPermutationTest(const std::vector<float>& p
 
     // 4. p-value 계산 및 판정
     // p-value = (betterCount + 1) / (numPermutations + 1)
-    double pValue = static_cast<double>(betterCount + 1) / (numPermutations + 1);
+    auto pValue = static_cast<double>(betterCount + 1) / (iterations + 1);
 
     std::cout << "------------------------------------------------------\n";
     std::cout << "Permutation Test Result:\n";
-    std::cout << " - Better Random Strategies: " << betterCount << " / " << numPermutations << "\n";
+    std::cout << " - Better Random Strategies: " << betterCount << " / " << iterations << "\n";
     std::cout << " - P-Value: " << pValue << "\n"; // 보통 0.05 미만이면 유의미(Significant)
 
-    if (pValue < 0.05) 
+    if (pValue < 0.05)
     {
         std::cout << ">>> SUCCESS: The strategy is Statistically Significant! (Not Luck)\n";
     }
-    else {
+    else 
+    {
         std::cout << ">>> WARNING: The strategy might be due to randomness.\n";
     }
     std::cout << "======================================================\n";
-}
-
-void ExperimentManager::RunBestModelAndExportHeatmap(const CsvLoader::Dataset& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio)
-{
-    std::cout << "\n======================================================\n";
-    std::cout << ">>> [Fast Track] Training BEST Model & Exporting Heatmap <<<\n";
-    std::cout << "======================================================\n";
-
-    // 1. 데이터 분할 (Train / Test) - 기존 로직 그대로 사용
-    size_t totalRows = dataset.rows;
-    size_t splitPoint = static_cast<size_t>(totalRows * splitRatio);
-    size_t testSize = totalRows - splitPoint;
-
-    // 2. DMatrix 생성
-    DMatrixHandle hFullCls, hFullReg;
-    const float nanVal = std::numeric_limits<float>::quiet_NaN();
-    SAFE_XGBOOST(XGDMatrixCreateFromMat(dataset.features.data(), totalRows, dataset.cols, nanVal, &hFullCls));
-    SAFE_XGBOOST(XGDMatrixCreateFromMat(dataset.features.data(), totalRows, dataset.cols, nanVal, &hFullReg));
-
-    SAFE_XGBOOST(XGDMatrixSetFloatInfo(hFullCls, "label", dataset.labels.data(), totalRows));
-    SAFE_XGBOOST(XGDMatrixSetFloatInfo(hFullReg, "label", dataset.returns.data(), totalRows));
-
-    // Slice
-    std::vector<int> allIndices(totalRows);
-    std::iota(allIndices.begin(), allIndices.end(), 0);
-    DMatrixHandle hTrainCls, hTestCls, hTrainReg, hTestReg;
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullCls, allIndices.data(), splitPoint, &hTrainCls));
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullCls, allIndices.data() + splitPoint, testSize, &hTestCls));
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullReg, allIndices.data(), splitPoint, &hTrainReg));
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullReg, allIndices.data() + splitPoint, testSize, &hTestReg));
-
-    // 3. 모델 학습 (딱 한 번만 수행!)
-    std::cout << ">>> Training Best Classification Model...\n";
-    BoosterHandle hBoosterCls = TrainBooster(hTrainCls, bestClsConfig);
-
-    std::cout << ">>> Training Best Regression Model...\n";
-    BoosterHandle hBoosterReg = TrainBooster(hTrainReg, bestRegConfig);
-
-    // 4. 예측 수행 (Predict)
-    std::cout << ">>> Predicting Test Set...\n";
-    const float* predPD;
-    const float* predEstReturn;
-    bst_ulong outLen;
-    SAFE_XGBOOST(XGBoosterPredict(hBoosterCls, hTestCls, 0, 0, 0, &outLen, &predPD));
-    SAFE_XGBOOST(XGBoosterPredict(hBoosterReg, hTestReg, 0, 0, 0, &outLen, &predEstReturn));
-
-    // 5. 정답 데이터 준비 (Test Set)
-    std::vector<float> testActualReturns(dataset.returns.begin() + splitPoint, dataset.returns.end());
-    std::vector<float> testBonds(dataset.bondYields.begin() + splitPoint, dataset.bondYields.end());
-
-
-    // =========================================================
-    // [핵심] 히트맵 데이터 생성 (Grid Simulation)
-    // =========================================================
-    std::cout << ">>> Generating Heatmap Data (No Retraining)...\n";
-
-    std::ofstream outFile("heatmap_data.csv");
-    outFile << "PD_Threshold,Return_Threshold,Sharpe_Ratio,Approved_Count,Approved_Rate\n";
-
-    // 검색 범위 설정
-
-    int totalCombinations = 0;
-
-    // 루프 밖에서 미리 메모리를 확보하여 재할당 오버헤드 제거
-    std::vector<bool> tempApproval;
-    tempApproval.reserve(testSize);
-
-    // pdTh: 0.01 ~ 0.40 (0.01 단위 -> 40회 반복)
-    for (int i = 1; i <= 40; ++i)
-    {
-        float pdTh = i * 0.01f;
-
-        // retTh: 0.005 ~ 0.100 (0.005 단위 -> 20회 반복)
-        for (int j = 1; j <= 20; ++j)
-        {
-            float retTh = j * 0.005f;
-
-            // 벡터 초기화 (메모리는 유지하고 크기만 0으로)
-            tempApproval.clear();
-
-            // 기존 로직 수행
-            int count = 0;
-            for (size_t k = 0; k < testSize; ++k)
-            {
-                // 주의: 실수 비교이므로 데이터 정밀도에 따라 
-                // 등호(<=, >=) 처리가 필요한지 확인 필요. 여기선 기존 로직(<, >) 유지.
-                bool pass = (predPD[k] < pdTh) && (predEstReturn[k] > retTh);
-
-                tempApproval.push_back(pass);
-                if (pass) count++;
-            }
-
-            // 샤프지수 계산
-            float sharpe = 0.0f;
-            if (count > 10)
-            {
-                sharpe = CalculateSharpeRatioVer2(testActualReturns, testBonds, tempApproval);
-            }
-
-            // CSV 저장
-            float rate = (testSize > 0) ? ((float)count / testSize * 100.0f) : 0.0f;
-            outFile << pdTh << "," << retTh << "," << sharpe << "," << count << "," << rate << "\n";
-
-            totalCombinations++;
-        }
-    }
-
-    outFile.close();
-    std::cout << ">>> Heatmap Data Saved to 'heatmap_data.csv' (" << totalCombinations << " combinations)\n";
-
-
-    std::vector<float> vecPredPD(predPD, predPD + outLen);
-    std::vector<float> vecPredRet(predEstReturn, predEstReturn + outLen);
-    
-    float bestPdParam = 0.20f;
-    float bestRetParam = 0.075f;
-    PerformRandomPermutationTest(
-        vecPredPD,
-        vecPredRet,
-        testActualReturns,
-        testBonds,
-        bestPdParam,
-        bestRetParam,
-        1000 // 1000번 반복
-    );
-    // 6. 메모리 정리
-    XGDMatrixFree(hFullCls); XGDMatrixFree(hFullReg);
-    XGDMatrixFree(hTrainCls); XGDMatrixFree(hTestCls);
-    XGDMatrixFree(hTrainReg); XGDMatrixFree(hTestReg);
-    XGBoosterFree(hBoosterCls); XGBoosterFree(hBoosterReg);
-
-    std::cout << ">>> Done.\n";
-}
-
-void ExperimentManager::RunBestModelAndExportHeatmapVer2(const CsvLoader::Dataset& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio)
-{
-    std::cout << "\n======================================================\n";
-    std::cout << ">>> [Simulation] Training BEST Model & 10k Sample Heatmap <<<\n";
-    std::cout << "======================================================\n";
-
-    // 1. 데이터 분할 (Train / Test)
-    size_t totalRows = dataset.rows;
-    size_t splitPoint = static_cast<size_t>(totalRows * splitRatio);
-    size_t testSize = totalRows - splitPoint;
-
-    if (testSize <= 0) 
-    {
-        std::cerr << "Error: Test set size is 0. Check splitRatio." << std::endl;
-        return;
-    }
-
-    // 2. DMatrix 생성 (XGBoost API 전용)
-    DMatrixHandle hFullCls, hFullReg;
-    const float nanVal = std::numeric_limits<float>::quiet_NaN();
-    SAFE_XGBOOST(XGDMatrixCreateFromMat(dataset.features.data(), totalRows, dataset.cols, nanVal, &hFullCls));
-    SAFE_XGBOOST(XGDMatrixCreateFromMat(dataset.features.data(), totalRows, dataset.cols, nanVal, &hFullReg));
-
-    SAFE_XGBOOST(XGDMatrixSetFloatInfo(hFullCls, "label", dataset.labels.data(), totalRows));
-    SAFE_XGBOOST(XGDMatrixSetFloatInfo(hFullReg, "label", dataset.returns.data(), totalRows));
-
-    std::vector<int> allIndices(totalRows);
-    std::iota(allIndices.begin(), allIndices.end(), 0);
-    DMatrixHandle hTrainCls, hTestCls, hTrainReg, hTestReg;
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullCls, allIndices.data(), splitPoint, &hTrainCls));
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullCls, allIndices.data() + splitPoint, testSize, &hTestCls));
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullReg, allIndices.data(), splitPoint, &hTrainReg));
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullReg, allIndices.data() + splitPoint, testSize, &hTestReg));
-
-    std::cout << ">>> Training Best Classification Model (ID: " << bestClsConfig.id << ")...\n";
-    BoosterHandle hBoosterCls = TrainBooster(hTrainCls, bestClsConfig);
-
-    std::cout << ">>> Training Best Regression Model (ID: " << bestRegConfig.id << ")...\n";
-    BoosterHandle hBoosterReg = TrainBooster(hTrainReg, bestRegConfig);
-
-    std::cout << ">>> Predicting Test Set...\n";
-    const float* predPD;
-    const float* predEstReturn;
-    bst_ulong outLen;
-    SAFE_XGBOOST(XGBoosterPredict(hBoosterCls, hTestCls, 0, 0, 0, &outLen, &predPD));
-    SAFE_XGBOOST(XGBoosterPredict(hBoosterReg, hTestReg, 0, 0, 0, &outLen, &predEstReturn));
-
-    std::vector<float> testActualReturns(dataset.returns.begin() + splitPoint, dataset.returns.end());
-    std::vector<float> testBonds(dataset.bondYields.begin() + splitPoint, dataset.bondYields.end());
-
-    const size_t targetSampleSize = 10000;
-    size_t finalSampleSize = std::min(targetSampleSize, (size_t)outLen);
-
-    std::vector<int> sampleIndices(outLen);
-    std::iota(sampleIndices.begin(), sampleIndices.end(), 0);
-
-    std::random_device rd;
-    std::mt19937 g(rd());
-    std::shuffle(sampleIndices.begin(), sampleIndices.end(), g);
-    sampleIndices.resize(finalSampleSize); // 10,000명만 남김
-
-    // 샘플링된 인원에 대한 실제값 미리 추출 (성능 최적화)
-    std::vector<float> sampledActualReturns;
-    std::vector<float> sampledBonds;
-    sampledActualReturns.reserve(finalSampleSize);
-    sampledBonds.reserve(finalSampleSize);
-
-    for (int idx : sampleIndices) 
-    {
-        sampledActualReturns.push_back(testActualReturns[idx]);
-        sampledBonds.push_back(testBonds[idx]);
-    }
-
-    std::cout << ">>> Sampled " << finalSampleSize << " records for Portfolio Simulation.\n";
-
-    std::cout << ">>> Generating Heatmap Data...\n";
-    std::ofstream outFile("heatmap_data_10k.csv");
-    outFile << "PD_Threshold,Return_Threshold,Sharpe_Ratio,Approved_Count,Approved_Rate\n";
-
-    std::vector<bool> tempApproval;
-    tempApproval.reserve(finalSampleSize);
-
-    int totalCombinations = 0;
-
-    // pdTh: 0.01 ~ 0.40 (0.01 단위)
-    for (int i = 1; i <= 40; ++i) 
-    {
-        float pdTh = i * 0.01f;
-
-        // retTh: 0.005 ~ 0.100 (0.005 단위)
-        for (int j = 1; j <= 20; ++j) 
-        {
-            float retTh = j * 0.005f;
-
-            tempApproval.clear();
-            int approvedCount = 0;
-
-            // 모델의 예측값(전체 예측 결과 중 샘플링된 인덱스만)을 임계값과 비교
-            for (int idx : sampleIndices) {
-                bool pass = (predPD[idx] < pdTh) && (predEstReturn[idx] > retTh);
-                tempApproval.push_back(pass);
-                if (pass) approvedCount++;
-            }
-
-            // 샤프지수 계산
-            float sharpe = 0.0f;
-            if (approvedCount > 10) 
-            {
-                // 샘플링된 10,000명 중 승인된 사람들의 샤프지수 산출
-                sharpe = CalculateSharpeRatioVer2(sampledActualReturns, sampledBonds, tempApproval);
-            }
-
-            float rate = (finalSampleSize > 0) ? ((float)approvedCount / finalSampleSize * 100.0f) : 0.0f;
-            outFile << pdTh << "," << retTh << "," << sharpe << "," << approvedCount << "," << rate << "\n";
-            totalCombinations++;
-        }
-    }
-    outFile.close();
-    std::cout << ">>> Heatmap Data Saved (" << totalCombinations << " combinations).\n";
-
-    // =========================================================
-    // 순열 검정 (유의성 테스트)
-    // =========================================================
-    std::vector<float> vecPredPD;
-    std::vector<float> vecPredRet;
-    vecPredPD.reserve(finalSampleSize);
-    vecPredRet.reserve(finalSampleSize);
-
-    for (int idx : sampleIndices) {
-        vecPredPD.push_back(predPD[idx]);
-        vecPredRet.push_back(predEstReturn[idx]);
-    }
-
-    // 특정 베스트 파라미터로 유의성 검증 (예시값: 0.20, 0.075)
-    PerformRandomPermutationTest(vecPredPD, vecPredRet, sampledActualReturns, sampledBonds, 0.20f, 0.075f, 1000);
-
-    // 6. 메모리 정리
-    XGDMatrixFree(hFullCls); XGDMatrixFree(hFullReg);
-    XGDMatrixFree(hTrainCls); XGDMatrixFree(hTestCls);
-    XGDMatrixFree(hTrainReg); XGDMatrixFree(hTestReg);
-    XGBoosterFree(hBoosterCls); XGBoosterFree(hBoosterReg);
-
-    std::cout << ">>> Experiment Completed Successfully.\n";
-}
-
-void ExperimentManager::BoostrappingForHeatMap(const CsvLoader::Dataset& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio)
-{
-    std::cout << "\n======================================================\n";
-    std::cout << ">>> [Bootstrapping] 1,000 Iterations of 10k Samples <<<\n";
-    std::cout << "======================================================\n";
-
-    // 1. 데이터 분할 및 모델 학습 (동일)
-    size_t totalRows = dataset.rows;
-    size_t splitPoint = static_cast<size_t>(totalRows * splitRatio);
-    size_t testSize = totalRows - splitPoint;
-
-    DMatrixHandle hFullCls, hFullReg;
-    const float nanVal = std::numeric_limits<float>::quiet_NaN();
-    SAFE_XGBOOST(XGDMatrixCreateFromMat(dataset.features.data(), totalRows, dataset.cols, nanVal, &hFullCls));
-    SAFE_XGBOOST(XGDMatrixCreateFromMat(dataset.features.data(), totalRows, dataset.cols, nanVal, &hFullReg));
-    SAFE_XGBOOST(XGDMatrixSetFloatInfo(hFullCls, "label", dataset.labels.data(), totalRows));
-    SAFE_XGBOOST(XGDMatrixSetFloatInfo(hFullReg, "label", dataset.returns.data(), totalRows));
-
-    DMatrixHandle hTrainCls, hTestCls, hTrainReg, hTestReg;
-    std::vector<int> allIndices(totalRows);
-    std::iota(allIndices.begin(), allIndices.end(), 0);
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullCls, allIndices.data(), splitPoint, &hTrainCls));
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullCls, allIndices.data() + splitPoint, testSize, &hTestCls));
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullReg, allIndices.data(), splitPoint, &hTrainReg));
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullReg, allIndices.data() + splitPoint, testSize, &hTestReg));
-
-    BoosterHandle hBoosterCls = TrainBooster(hTrainCls, bestClsConfig);
-    BoosterHandle hBoosterReg = TrainBooster(hTrainReg, bestRegConfig);
-
-    // 2. 테스트 셋 전체 예측 (한 번만 수행)
-    const float* predPD;
-    const float* predEstReturn;
-    bst_ulong outLen;
-    SAFE_XGBOOST(XGBoosterPredict(hBoosterCls, hTestCls, 0, 0, 0, &outLen, &predPD));
-    SAFE_XGBOOST(XGBoosterPredict(hBoosterReg, hTestReg, 0, 0, 0, &outLen, &predEstReturn));
-
-    std::vector<float> testActualReturns(dataset.returns.begin() + splitPoint, dataset.returns.end());
-    std::vector<float> testBonds(dataset.bondYields.begin() + splitPoint, dataset.bondYields.end());
-
-    // =========================================================
-    // [핵심] 1,000회 반복 시뮬레이션 (Bootstrapping)
-    // =========================================================
-    const int numSimulations = 1000;
-    const size_t sampleSize = 10000;
-    const float pdTh = 0.20f;
-    const float retTh = 0.075f;
-
-    std::ofstream outFile("bootstrapping_results_1000.csv");
-    outFile << "Sim_ID,Sharpe_Ratio,Approved_Count,Approved_Rate\n";
-
-    std::random_device rd;
-    std::mt19937 g(rd());
-
-    // 인덱스 풀 생성
-    std::vector<int> indexPool(outLen);
-    std::iota(indexPool.begin(), indexPool.end(), 0);
-
-    std::cout << ">>> Starting 1,000 Simulations (Sampling 10k each)...\n";
-
-    for (int s = 1; s <= numSimulations; ++s)
-    {
-        // 1. 매번 다르게 10,000명 샘플링
-        std::shuffle(indexPool.begin(), indexPool.end(), g);
-
-        std::vector<float> subActual;
-        std::vector<float> subBonds;
-        std::vector<bool> subApproval;
-        subActual.reserve(sampleSize);
-        subBonds.reserve(sampleSize);
-        subApproval.reserve(sampleSize);
-
-        int approvedCount = 0;
-
-        for (size_t i = 0; i < sampleSize; ++i)
-        {
-            int idx = indexPool[i];
-            bool pass = (predPD[idx] < pdTh) && (predEstReturn[idx] > retTh);
-
-            subActual.push_back(testActualReturns[idx]);
-            subBonds.push_back(testBonds[idx]);
-            subApproval.push_back(pass);
-            if (pass) approvedCount++;
-        }
-
-        // 2. 해당 샘플의 샤프지수 계산
-        float sharpe = 0.0f;
-        if (approvedCount > 10) 
-        {
-            sharpe = CalculateSharpeRatioVer2(subActual, subBonds, subApproval);
-        }
-
-        // 3. 1,000개 결과 모두 CSV 기록
-        float rate = (float)approvedCount / sampleSize * 100.0f;
-        outFile << s << "," << sharpe << "," << approvedCount << "," << rate << "\n";
-
-        if (s % 100 == 0) std::cout << "Simulation " << s << " / 1000 completed.\n";
-    }
-
-    outFile.close();
-    std::cout << ">>> All 1,000 results saved to 'bootstrapping_results_1000.csv'\n";
-
-    // 4. 메모리 정리
-    XGDMatrixFree(hFullCls); XGDMatrixFree(hFullReg);
-    XGDMatrixFree(hTrainCls); XGDMatrixFree(hTestCls);
-    XGDMatrixFree(hTrainReg); XGDMatrixFree(hTestReg);
-    XGBoosterFree(hBoosterCls); XGBoosterFree(hBoosterReg);
-}
-
-void ExperimentManager::BoostWrappingAndPermutationForHeatMap(const CsvLoader::Dataset& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio)
-{
-    std::cout << "\n======================================================\n";
-    std::cout << ">>> [Simulation] Full Test Set Grid Search & Permutation Test <<<\n";
-    std::cout << "======================================================\n";
-
-    // 1. 데이터 분할 (Train / Test)
-    size_t totalRows = dataset.rows;
-    size_t splitPoint = static_cast<size_t>(totalRows * splitRatio);
-    size_t testSize = totalRows - splitPoint;
-
-    if (testSize <= 0) 
-    {
-        std::cerr << "Error: Test set size is 0. Check splitRatio." << std::endl;
-        return;
-    }
-
-    // 2. DMatrix 생성 (XGBoost API)
-    DMatrixHandle hFullCls, hFullReg;
-    constexpr const float nanVal = std::numeric_limits<float>::quiet_NaN();
-    SAFE_XGBOOST(XGDMatrixCreateFromMat(dataset.features.data(), totalRows, dataset.cols, nanVal, &hFullCls));
-    SAFE_XGBOOST(XGDMatrixCreateFromMat(dataset.features.data(), totalRows, dataset.cols, nanVal, &hFullReg));
-
-    SAFE_XGBOOST(XGDMatrixSetFloatInfo(hFullCls, "label", dataset.labels.data(), totalRows));
-    SAFE_XGBOOST(XGDMatrixSetFloatInfo(hFullReg, "label", dataset.returns.data(), totalRows));
-
-    // Slice
-    std::vector<int> allIndices(totalRows);
-    std::iota(allIndices.begin(), allIndices.end(), 0);
-    DMatrixHandle hTrainCls, hTestCls, hTrainReg, hTestReg;
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullCls, allIndices.data(), splitPoint, &hTrainCls));
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullCls, allIndices.data() + splitPoint, testSize, &hTestCls));
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullReg, allIndices.data(), splitPoint, &hTrainReg));
-    SAFE_XGBOOST(XGDMatrixSliceDMatrix(hFullReg, allIndices.data() + splitPoint, testSize, &hTestReg));
-
-    // 3. 모델 학습
-    std::cout << ">>> Training Best Classification Model (ID: " << bestClsConfig.id << ")...\n";
-    BoosterHandle hBoosterCls = TrainBooster(hTrainCls, bestClsConfig);
-
-    std::cout << ">>> Training Best Regression Model (ID: " << bestRegConfig.id << ")...\n";
-    BoosterHandle hBoosterReg = TrainBooster(hTrainReg, bestRegConfig);
-
-    // 4. 예측 수행 (Test Set 전체)
-    std::cout << ">>> Predicting Full Test Set (" << testSize << " rows)...\n";
-    const float* predPD;
-    const float* predEstReturn;
-    bst_ulong outLen;
-    SAFE_XGBOOST(XGBoosterPredict(hBoosterCls, hTestCls, 0, 0, 0, &outLen, &predPD));
-    SAFE_XGBOOST(XGBoosterPredict(hBoosterReg, hTestReg, 0, 0, 0, &outLen, &predEstReturn));
-
-    // 정답 데이터 준비
-    std::vector<float> testActualReturns(dataset.returns.begin() + splitPoint, dataset.returns.end());
-    std::vector<float> testBonds(dataset.bondYields.begin() + splitPoint, dataset.bondYields.end());
-
-    // 5. 히트맵 데이터 생성 (그리드 서치 - 테스트셋 전체 대상)
-    std::cout << ">>> Generating Heatmap Data (Full Test Set)...\n";
-    std::ofstream outFile("heatmap_full_testset.csv");
-    outFile << "PD_Threshold,Return_Threshold,Sharpe_Ratio,Mean_Excess_Return,Std_Dev,Approved_Count,Approved_Rate\n";
-
-    std::vector<bool> fullApproval;
-    fullApproval.reserve(testSize);
-
-    for (int i = 1; i <= 40; ++i) 
-    {
-        auto pdTh = i * 0.01f;
-        for (auto j = 1; j <= 20; ++j) 
-        {
-            auto retTh = j * 0.005f;
-
-            fullApproval.clear();
-            double sumEx = 0.0;
-            double sumSqEx = 0.0;
-            int approvedCount = 0;
-
-            for (size_t k = 0; k < testSize; ++k) 
-            {
-                auto pass = (predPD[k] < pdTh) && (predEstReturn[k] > retTh);
-                fullApproval.push_back(pass);
-                if (pass) 
-                {
-                    auto excess = (float)(testActualReturns[k] - testBonds[k]);
-                    sumEx += (double)excess;
-                    sumSqEx += (double)excess * excess;
-                    approvedCount++;
-                }
-            }
-
-            double meanExcess = 0.0;
-            double stdDev = 0.0;
-            auto sharpe = 0.0f;
-
-            if (approvedCount > 10) 
-            {
-                // 수치 정합성을 위해 전체 테스트셋 크기를 분모로 통계 산출
-                meanExcess = sumEx / (double)testSize;
-                double meanSq = sumSqEx / (double)testSize;
-                double variance = meanSq - (meanExcess * meanExcess);
-                stdDev = (variance > 0) ? std::sqrt(variance) : 0.0;
-
-                sharpe = CalculateSharpeRatioVer2(testActualReturns, testBonds, fullApproval);
-            }
-
-            auto rate = (float)approvedCount / (float)testSize * 100.0f;
-            outFile << pdTh << "," << retTh << "," << sharpe << "," << meanExcess << "," << stdDev << "," << approvedCount << "," << rate << "\n";
-        }
-    }
-    outFile.close();
-    std::cout << ">>> Full Test Set Heatmap Saved.\n";
-
-    // 6. 순열 검정 (유의성 테스트 - 고정된 베스트 파라미터 적용)
-    std::vector<float> vecPredPD(predPD, predPD + testSize);
-    std::vector<float> vecPredRet(predEstReturn, predEstReturn + testSize);
-
-    PerformRandomPermutationTest(vecPredPD, vecPredRet, testActualReturns, testBonds, 0.20f, 0.075f, 1000);
-
-    XGDMatrixFree(hFullCls); XGDMatrixFree(hFullReg);
-    XGDMatrixFree(hTrainCls); XGDMatrixFree(hTestCls);
-    XGDMatrixFree(hTrainReg); XGDMatrixFree(hTestReg);
-    XGBoosterFree(hBoosterCls); XGBoosterFree(hBoosterReg);
-
-    std::cout << ">>> Experiment Completed Successfully.\n";
 }
