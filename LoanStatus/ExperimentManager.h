@@ -418,8 +418,14 @@ public:
         float splitRatio
     );
  
+
+    void RunBestModelAndBootstrappingV4(const CsvLoader::Dataset& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio);
+    void RunBestModelAndExportHeatmapVer2(const CsvLoader::Dataset& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio);
+    void BoostrappingForHeatMap(const CsvLoader::Dataset& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio);
+    void RunRobustHeatmapV5(const CsvLoader::Dataset& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio);
+    void BoostWrappingAndPermutationForHeatMap(const CsvLoader::Dataset& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio);
+
 private:
-    
     BoosterHandle TrainBooster(DMatrixHandle hTrain, const ModelConfig& config)
     {
         BoosterHandle hBooster;
