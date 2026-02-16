@@ -3,7 +3,7 @@
 class CsvLoader
 {
 public:
-    struct Dataset
+    struct DataSet
     {
         std::vector<float> features;
         std::vector<float> labels;
@@ -28,7 +28,7 @@ public:
         return featureNames;
     }
     // 메인 로딩 함수
-    Dataset Load();
+    DataSet Load();
 
 private:
     std::string fName;
@@ -53,7 +53,7 @@ private:
     }
 
     // 워커 스레드 함수
-    void ParseWorker(size_t start, size_t end, size_t headerEndPos, const std::vector<int>& featureIndices, int targetIdx, int returnIdx, int bondIdx, Dataset& outResult);
+    void ParseWorker(size_t start, size_t end, size_t headerEndPos, const std::vector<int>& featureIndices, int targetIdx, int returnIdx, int bondIdx, DataSet& outResult);
 
 };
 

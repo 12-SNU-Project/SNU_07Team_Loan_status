@@ -3,7 +3,7 @@
 #include "ExperimentManager.h"
 
 // =========================================================
-// [공통 함수] 학습 및 예측 데이터 준비
+// 학습 및 예측 데이터 준비
 // =========================================================
 ExperimentContext ExperimentManager::PrepareExperiment(const CsvLoader::DataSet& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio)
 {
@@ -170,7 +170,7 @@ void ExperimentManager::RunReliabilityCheck_Bootstrap(const CsvLoader::DataSet& 
     std::cout << "======================================================\n";
 
     const auto numSimulations = 1000;
-    const size_t sampleSize = 10000;
+    const auto sampleSize = 10000;
     const auto pdTh = 0.20f;    // 고정 파라미터
     const auto retTh = 0.075f;  // 고정 파라미터
 
@@ -194,7 +194,7 @@ void ExperimentManager::RunReliabilityCheck_Bootstrap(const CsvLoader::DataSet& 
         std::vector<bool> subApproval;
         subActual.reserve(sampleSize); subBonds.reserve(sampleSize); subApproval.reserve(sampleSize);
 
-        for (size_t k = 0; k < sampleSize; ++k)
+        for (auto k = 0; k < sampleSize; ++k)
         {
             auto idx = pool[k];
             auto pass = (ctx.predPD[idx] < pdTh) && (ctx.predEstReturn[idx] > retTh);
@@ -257,7 +257,7 @@ void ExperimentManager::RunHeatmap_RobustBootstrap(const CsvLoader::DataSet& dat
     std::vector<GridStats> accumulator(40 * 20);
 
     const auto numSimulations = 1000;
-    const size_t sampleSize = 10000;
+    const auto sampleSize = 10000;
 
     std::random_device rd;
     std::mt19937 g(rd());
@@ -272,7 +272,7 @@ void ExperimentManager::RunHeatmap_RobustBootstrap(const CsvLoader::DataSet& dat
         curActual.reserve(sampleSize); curBonds.reserve(sampleSize);
         curPD.reserve(sampleSize); curRet.reserve(sampleSize);
 
-        for (size_t k = 0; k < sampleSize; ++k)
+        for (auto k = 0; k < sampleSize; ++k)
         {
             auto idx = pool[k];
             curActual.push_back(ctx.actualReturns[idx]);
@@ -293,7 +293,7 @@ void ExperimentManager::RunHeatmap_RobustBootstrap(const CsvLoader::DataSet& dat
                 auto sumSqEx = 0.0;
                 auto count = 0;
 
-                for (size_t k = 0; k < sampleSize; ++k)
+                for (auto k = 0; k < sampleSize; ++k)
                 {
                     if (curPD[k] < pdTh && curRet[k] > retTh)
                     {
@@ -636,3 +636,4 @@ void ExperimentManager::PerformRandomPermutationTest(const std::vector<float>& p
     }
     std::cout << "======================================================\n";
 }
+ 

@@ -44,7 +44,7 @@ struct ExperimentResult
     ValidationMetrics bestMetrics;
 };
 
-// [신규] 실험 데이터를 담는 컨텍스트 (중복 제거용)
+// 실험 데이터를 담는 컨텍스트 (중복 제거용)
 struct ExperimentContext
 {
     std::vector<float> predPD;          // 예측된 부도확률

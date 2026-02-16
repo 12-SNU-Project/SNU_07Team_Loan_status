@@ -5,7 +5,7 @@
 using namespace std::string_literals;
 
 // 데이터 미리보기 (디버깅용)
-void PrintDataPreview(const CsvLoader::Dataset& data, const std::vector<std::string>& featureNames, int numRows = 5)
+void PrintDataPreview(const CsvLoader::DataSet& data, const std::vector<std::string>& featureNames, int numRows = 5)
 {
     const int PRECISION = 6;
     const int W_FEAT = 12;
@@ -58,17 +58,19 @@ int main()
         std::set<std::string> ignoreList =
         {
             "Actual_term", "total_pymnt", "last_pymnt_amnt", (const char*)u8"내부수익률",
-            "loan_status", "Return"
+            "loan_status", "Return",
         };
 
         std::cout << ">>> [1/3] Data Loading...\n";
         CsvLoader loader(csvFile, targetColumn, ignoreList);
         auto dataset = loader.Load();
 
-        if (dataset.rows == 0) {
+        if (dataset.rows == 0) 
+        {
             std::cerr << "Error: No data found.\n"; return 1;
         }
         std::cout << " -> Load Complete: " << dataset.rows << " Rows, " << dataset.cols << " Cols\n";
+       
 
         std::cout << "\nContinuing to Training? (1: Yes / 0: No): ";
         int bKeepGoing = 0;
@@ -81,36 +83,28 @@ int main()
         std::cout << "    - Optimization: Parameter Grid + Threshold Auto-Tuning\n";
 
         ExperimentManager manager;
+        ModelConfig bestCls;
+        bestCls.maxDepth = 7;       // Log: "Best Depth: 7"
+        bestCls.eta = 0.05f;        // Log: "Best Eta: 0.05"
+        bestCls.numRound = 400;     // Log: "Rounds: 400"
+        bestCls.objective = "binary:logistic";
+        bestCls.minChildWeight = 1.0f;
+        bestCls.scalePosWeight = 1.0f;
+        bestCls.subsample = 0.8f;
+        bestCls.colsample = 0.8f;
+        bestCls.evalMetric = "auc";
 
-        // Grid Search 실행 (하이퍼파라미터 + 임계값 최적화 자동 수행)
-        // 기존의 RunDualModelValidation(고정값 1회 실행) 대신 이걸 호출하는 게 좋습니다.
-        ExperimentResult finalResult = manager.RunGridSearchAuto(dataset, 0.8f);
-
-        std::cout << "\n" << std::string(60, '=') << "\n";
-        std::cout << " [FINAL BEST STRATEGY REPORT]\n";
-        std::cout << std::string(60, '=') << "\n";
-
-        std::cout << " 1. Performance Metrics (Test Set)\n";
-        std::cout << "   - Best Sharpe Ratio : " << std::fixed << std::setprecision(5) << finalResult.bestMetrics.sharpeRatio << "\n";
-        std::cout << "   - Portfolio Return  : " << std::setprecision(2) << (finalResult.bestMetrics.avgReturn * 100.f) << "% (Avg)\n";
-        std::cout << "   - Portfolio PD      : " << std::setprecision(2) << (finalResult.bestMetrics.avgPD * 100.f) << "% (Avg)\n";
-        std::cout << "   - Approved Loans    : " << finalResult.bestMetrics.approvedCount << " cases\n\n";
-       
-        std::cout << " 2. Optimal Thresholds (Action Plan)\n";
-        std::cout << "   - PD Cut-off        : < " << std::setprecision(2) << finalResult.bestMetrics.bestPDThreshold << " (Lower is stricter)\n";
-        std::cout << "   - Return Cut-off    : > " << std::setprecision(2) << finalResult.bestMetrics.bestReturnThreshold << " (Higher is stricter)\n\n";
-        
-        std::cout << " 3. Best Model Hyperparameters\n";
-        std::cout << "   [Classification Model - Default Prediction]\n";
-        std::cout << "     - Max Depth: " << finalResult.bestClsConfig.maxDepth << "\n";
-        std::cout << "     - Eta (LR) : " << finalResult.bestClsConfig.eta << "\n";
-        std::cout << "     - Rounds   : " << finalResult.bestClsConfig.numRound << "\n";
-        std::cout << "   [Regression Model - Return Prediction]\n";
-        std::cout << "     - Max Depth: " << finalResult.bestRegConfig.maxDepth << "\n";
-        std::cout << "     - Eta (LR) : " << finalResult.bestRegConfig.eta << "\n";
-        std::cout << "     - Rounds   : " << finalResult.bestRegConfig.numRound << "\n";
-        std::cout << std::string(60, '=') << "\n";
-
+        ModelConfig bestReg;
+        bestReg.maxDepth = 5;       // Log: "Best Depth: 5"
+        bestReg.eta = 0.05f;        // Log: "Best Eta: 0.05"
+        bestReg.numRound = 400;     // Log: "Rounds: 400"
+        bestReg.objective = "reg:absoluteerror";
+        bestReg.minChildWeight = 1.0f;
+        bestReg.scalePosWeight = 1.0f; // 회귀는 1.0
+        bestReg.subsample = 0.8f;
+        bestReg.colsample = 0.8f;
+        bestReg.evalMetric = "rmse";
+        manager.RunHeatmap_FullTestSet(dataset, bestCls, bestReg, 0.8f);
     }
     catch (const std::exception& e)
     {
@@ -120,3 +114,4 @@ int main()
 
     return 0;
 }
+

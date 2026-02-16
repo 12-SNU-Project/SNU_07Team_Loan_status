@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "CsvLoader.h"
 
-CsvLoader::Dataset CsvLoader::Load()
+CsvLoader::DataSet CsvLoader::Load()
 {
     std::ifstream file(fName);
     if (!file.is_open())
@@ -81,7 +81,7 @@ CsvLoader::Dataset CsvLoader::Load()
     std::cout << "[CsvLoader] Spawning " << numThreads << " threads for parsing...\n";
 
     std::vector<std::thread> threads;
-    std::vector<Dataset> threadResults(numThreads);
+    std::vector<DataSet> threadResults(numThreads);
 
     auto chunkSize = (size_t)((fileSize - headerSize) / numThreads);
     auto currentPos = headerSize;
@@ -105,7 +105,7 @@ CsvLoader::Dataset CsvLoader::Load()
     }
 
     // 4. 스레드 대기 및 결과 병합 (Join 루프)
-    Dataset finalData;
+    DataSet finalData;
     finalData.cols = static_cast<int>(featureIndices.size());
 
     for (unsigned int i = 0; i < numThreads; ++i)
@@ -129,7 +129,7 @@ CsvLoader::Dataset CsvLoader::Load()
     return finalData;
 }
 
-void CsvLoader::ParseWorker(size_t start, size_t end, size_t headerEndPos, const std::vector<int>& featureIndices, int targetIdx, int returnIdx, int bondIdx, Dataset& outResult)
+void CsvLoader::ParseWorker(size_t start, size_t end, size_t headerEndPos, const std::vector<int>& featureIndices, int targetIdx, int returnIdx, int bondIdx, DataSet& outResult)
 {
     // 각 스레드는 파일 스트림을 별도로 열어야 안전함 (읽기 전용이라도 seekg 충돌 방지)
     std::ifstream file(fName);
