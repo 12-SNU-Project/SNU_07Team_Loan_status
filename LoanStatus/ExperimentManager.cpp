@@ -163,7 +163,7 @@ void ExperimentManager::RunFullTestSet_Boostwrap(const CsvLoader::DataSet& datas
     auto ctx = PrepareExperiment(dataset, bestClsConfig, bestRegConfig, splitRatio);
 
     std::cout << "\n======================================================\n";
-    std::cout << ">>> [Mode 4] Full Test Set Heatmap (No Sampling) <<<\n";
+    std::cout << ">>> [Mode 2] Full Test Set Heatmap (No Sampling) <<<\n";
     std::cout << "======================================================\n";
 
     std::ofstream outFile("heatmap_full_testset.csv");
