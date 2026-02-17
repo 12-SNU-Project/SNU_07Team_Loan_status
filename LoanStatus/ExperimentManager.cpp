@@ -3,7 +3,7 @@
 #include "ExperimentManager.h"
 
 // =========================================================
-// 학습 및 예측 데이터 준비
+// Initialization
 // =========================================================
 ExperimentContext ExperimentManager::PrepareExperiment(const CsvLoader::DataSet& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio)
 {
@@ -53,6 +53,12 @@ ExperimentContext ExperimentManager::PrepareExperiment(const CsvLoader::DataSet&
     SAFE_XGBOOST(XGBoosterPredict(hBoosterReg, hTestReg, 0, 0, 0, &outLen, &predRet_ptr));
 
     // 6. 결과 데이터를 벡터로 복사
+    
+    if (outLen != ctx.testSize)
+    {
+        std::cerr << "Error: Prediction size mismatch! Expected " << ctx.testSize << ", Got " << outLen << std::endl;
+        std::exit(1);
+    }
     ctx.predPD.assign(predPD_ptr, predPD_ptr + outLen);
     ctx.predEstReturn.assign(predRet_ptr, predRet_ptr + outLen);
 
@@ -69,97 +75,8 @@ ExperimentContext ExperimentManager::PrepareExperiment(const CsvLoader::DataSet&
     return ctx;
 }
 
-ExperimentResult ExperimentManager::RunGridSearchFixed(const CsvLoader::DataSet& dataset, float splitRatio, float pdThreshold, float estReturnThreshold)
-{
-    return ExperimentResult();
-}
-
 // =========================================================
-// [Mode 1] Single 10k Sample Heatmap
-// =========================================================
-void ExperimentManager::RunHeatmap_SingleSample10k(const CsvLoader::DataSet& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio)
-{
-    auto ctx = PrepareExperiment(dataset, bestClsConfig, bestRegConfig, splitRatio);
-
-    std::cout << "\n======================================================\n";
-    std::cout << ">>> [Mode 1] Single 10k Sample Heatmap <<<\n";
-    std::cout << "======================================================\n";
-
-    // 10k 샘플링
-    const size_t targetSampleSize = 10000;
-    auto finalSampleSize = std::min(targetSampleSize, ctx.testSize);
-
-    std::vector<int> indices(ctx.testSize);
-    std::iota(indices.begin(), indices.end(), 0);
-
-    std::random_device rd;
-    std::mt19937 g(rd());
-    std::shuffle(indices.begin(), indices.end(), g);
-    indices.resize(finalSampleSize);
-
-    std::vector<float> sampActual, sampBonds;
-    sampActual.reserve(finalSampleSize);
-    sampBonds.reserve(finalSampleSize);
-
-    for (auto idx : indices)
-    {
-        sampActual.push_back(ctx.actualReturns[idx]);
-        sampBonds.push_back(ctx.bondYields[idx]);
-    }
-
-    std::cout << ">>> Generating Heatmap Data...\n";
-    std::ofstream outFile("heatmap_data_10k.csv");
-    outFile << "PD_Threshold,Return_Threshold,Sharpe_Ratio,Approved_Count,Approved_Rate\n";
-
-    auto totalCombinations = 0;
-
-    for (auto i = 1; i <= 40; ++i)
-    {
-        auto pdTh = i * 0.01f;
-        for (auto j = 1; j <= 20; ++j)
-        {
-            auto retTh = j * 0.005f;
-
-            std::vector<bool> approval;
-            approval.reserve(finalSampleSize);
-            auto count = 0;
-
-            for (auto idx : indices)
-            {
-                auto pass = (ctx.predPD[idx] < pdTh) && (ctx.predEstReturn[idx] > retTh);
-                approval.push_back(pass);
-                if (pass) count++;
-            }
-
-            auto sharpe = 0.0f;
-            if (count > 10)
-            {
-                sharpe = CalculateSharpeRatio(sampActual, sampBonds, approval);
-            }
-
-            auto rate = (float)count / finalSampleSize * 100.0f;
-            outFile << pdTh << "," << retTh << "," << sharpe << "," << count << "," << rate << "\n";
-            totalCombinations++;
-        }
-    }
-    outFile.close();
-    std::cout << ">>> Heatmap Saved (" << totalCombinations << " combinations).\n";
-
-    // 순열 검정
-    std::vector<float> sampPredPD, sampPredRet;
-    sampPredPD.reserve(finalSampleSize);
-    sampPredRet.reserve(finalSampleSize);
-
-    for (auto idx : indices)
-    {
-        sampPredPD.push_back(ctx.predPD[idx]);
-        sampPredRet.push_back(ctx.predEstReturn[idx]);
-    }
-    PerformRandomPermutationTest(sampPredPD, sampPredRet, sampActual, sampBonds, 0.20f, 0.075f, 1000);
-}
-
-// =========================================================
-// [Mode 2] Reliability Check
+// [Mode 1] Reliability Check
 // =========================================================
 void ExperimentManager::RunReliabilityCheck_Bootstrap(const CsvLoader::DataSet& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio)
 {
@@ -171,8 +88,8 @@ void ExperimentManager::RunReliabilityCheck_Bootstrap(const CsvLoader::DataSet& 
 
     const auto numSimulations = 1000;
     const auto sampleSize = 10000;
-    const auto pdTh = 0.20f;    // 고정 파라미터
-    const auto retTh = 0.075f;  // 고정 파라미터
+    const auto pdTh = 0.20f;    
+    const auto retTh = 0.075f; 
 
     std::ofstream outFile("bootstrapping_detailed_results.csv");
     outFile << "Sim_ID,Sharpe_Ratio,Mean_Excess_Return,Std_Dev,Approved_Count,Approved_Rate\n";
@@ -186,8 +103,8 @@ void ExperimentManager::RunReliabilityCheck_Bootstrap(const CsvLoader::DataSet& 
     {
         std::shuffle(pool.begin(), pool.end(), g);
 
-        auto sumExcess = 0.0;
-        auto sumSqExcess = 0.0;
+        auto accExcessReturn = 0.0;
+        auto accSqrExcessReturn = 0.0;
         auto approvedCount = 0;
 
         std::vector<float> subActual, subBonds;
@@ -197,38 +114,40 @@ void ExperimentManager::RunReliabilityCheck_Bootstrap(const CsvLoader::DataSet& 
         for (auto k = 0; k < sampleSize; ++k)
         {
             auto idx = pool[k];
-            auto pass = (ctx.predPD[idx] < pdTh) && (ctx.predEstReturn[idx] > retTh);
+            auto bPass = (ctx.predPD[idx] < pdTh) && (ctx.predEstReturn[idx] > retTh);
 
             subActual.push_back(ctx.actualReturns[idx]);
             subBonds.push_back(ctx.bondYields[idx]);
-            subApproval.push_back(pass);
+            subApproval.push_back(bPass);
 
-            if (pass)
+            if (bPass)
             {
-                auto excess = (double)(ctx.actualReturns[idx] - ctx.bondYields[idx]);
-                sumExcess += excess;
-                sumSqExcess += excess * excess;
+                auto excessReturn = (double)(ctx.actualReturns[idx] - ctx.bondYields[idx]);
+                accExcessReturn += excessReturn;
+                accSqrExcessReturn += excessReturn * excessReturn;
                 approvedCount++;
             }
         }
 
-        auto meanExcess = 0.0;
-        auto stdDev = 0.0;
-        auto sharpe = 0.0f;
+        auto mean = 0.0;    // 평균
+        auto stdDev = 0.0;  // standard deviation
+        auto sharpe = 0.0f; // sharpes ratio
+        auto approveRate = 0.0;
+        auto n = sampleSize; // 표본 개수
 
         if (approvedCount >= 10)
         {
-            // 전체 샘플 사이즈 기준 통계 (포트폴리오 관점)
-            meanExcess = sumExcess / (double)sampleSize;
-            auto meanSq = sumSqExcess / (double)sampleSize;
-            auto var = meanSq - (meanExcess * meanExcess);
-            stdDev = (var > 0) ? std::sqrt(var) : 0.0;
+            // full test set
+            auto accSqrDiffs = accSqrExcessReturn - ((accExcessReturn * accExcessReturn) / n);
+            if (accSqrDiffs < 0) accSqrDiffs = 0.0;
+            auto variance = accSqrDiffs / (n - 1.0);
+            stdDev = (variance > 0) ? std::sqrt(variance) : 0.0;
 
             sharpe = CalculateSharpeRatio(subActual, subBonds, subApproval);
         }
 
         auto rate = (float)approvedCount / sampleSize * 100.0f;
-        outFile << s << "," << sharpe << "," << meanExcess << "," << stdDev << "," << approvedCount << "," << rate << "\n";
+        outFile << s << "," << sharpe << "," << mean << "," << stdDev << "," << approvedCount << "," << rate << "\n";
 
         if (s % 100 == 0) std::cout << "Sim " << s << " / " << numSimulations << "\n";
     }
@@ -237,120 +156,9 @@ void ExperimentManager::RunReliabilityCheck_Bootstrap(const CsvLoader::DataSet& 
 }
 
 // =========================================================
-// [Mode 3] Robust Heatmap
+// [Mode 2] Full Test Set Heatmap: Mode 2 x 1000
 // =========================================================
-void ExperimentManager::RunHeatmap_RobustBootstrap(const CsvLoader::DataSet& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio)
-{
-    auto ctx = PrepareExperiment(dataset, bestClsConfig, bestRegConfig, splitRatio);
-
-    std::cout << "\n======================================================\n";
-    std::cout << ">>> [Mode 3] Robust Heatmap (1,000 Bootstraps) <<<\n";
-    std::cout << "======================================================\n";
-
-    struct GridStats
-    {
-        double sumSharpe = 0;
-        double sumMean = 0;
-        double sumStd = 0;
-        double sumCount = 0;
-    };
-    std::vector<GridStats> accumulator(40 * 20);
-
-    const auto numSimulations = 1000;
-    const auto sampleSize = 10000;
-
-    std::random_device rd;
-    std::mt19937 g(rd());
-    std::vector<int> pool(ctx.testSize);
-    std::iota(pool.begin(), pool.end(), 0);
-
-    for (auto s = 1; s <= numSimulations; ++s)
-    {
-        std::shuffle(pool.begin(), pool.end(), g);
-
-        std::vector<float> curActual, curBonds, curPD, curRet;
-        curActual.reserve(sampleSize); curBonds.reserve(sampleSize);
-        curPD.reserve(sampleSize); curRet.reserve(sampleSize);
-
-        for (auto k = 0; k < sampleSize; ++k)
-        {
-            auto idx = pool[k];
-            curActual.push_back(ctx.actualReturns[idx]);
-            curBonds.push_back(ctx.bondYields[idx]);
-            curPD.push_back(ctx.predPD[idx]);
-            curRet.push_back(ctx.predEstReturn[idx]);
-        }
-
-        for (auto i = 1; i <= 40; ++i)
-        {
-            auto pdTh = i * 0.01f;
-            for (auto j = 1; j <= 20; ++j)
-            {
-                auto retTh = j * 0.005f;
-                auto gridIdx = (i - 1) * 20 + (j - 1);
-
-                auto sumEx = 0.0;
-                auto sumSqEx = 0.0;
-                auto count = 0;
-
-                for (auto k = 0; k < sampleSize; ++k)
-                {
-                    if (curPD[k] < pdTh && curRet[k] > retTh)
-                    {
-                        auto ex = (double)(curActual[k] - curBonds[k]);
-                        sumEx += ex;
-                        sumSqEx += ex * ex;
-                        count++;
-                    }
-                }
-
-                if (count >= 10)
-                {
-                    auto mean = sumEx / (double)sampleSize;
-                    auto var = (sumSqEx / (double)sampleSize) - (mean * mean);
-                    auto std = (var > 0) ? std::sqrt(var) : 0.0;
-
-                    if (std > 1e-9)
-                    {
-                        accumulator[gridIdx].sumSharpe += (mean / std);
-                        accumulator[gridIdx].sumMean += mean;
-                        accumulator[gridIdx].sumStd += std;
-                        accumulator[gridIdx].sumCount += count;
-                    }
-                }
-            }
-        }
-        if (s % 100 == 0) std::cout << "Sim " << s << "\n";
-    }
-
-    std::ofstream outFile("robust_heatmap_detailed.csv");
-    outFile << "PD_Threshold,Return_Threshold,Avg_Sharpe,Avg_Return,Avg_StdDev,Avg_Approved_Count,Avg_Approved_Rate\n";
-
-    for (auto i = 1; i <= 40; ++i)
-    {
-        auto pdTh = i * 0.01f;
-        for (auto j = 1; j <= 20; ++j)
-        {
-            auto retTh = j * 0.005f;
-            auto idx = (i - 1) * 20 + (j - 1);
-            auto& acc = accumulator[idx];
-
-            auto avgCnt = acc.sumCount / numSimulations;
-            outFile << pdTh << "," << retTh << ","
-                << acc.sumSharpe / numSimulations << ","
-                << acc.sumMean / numSimulations << ","
-                << acc.sumStd / numSimulations << ","
-                << avgCnt << "," << (avgCnt / sampleSize * 100.0) << "\n";
-        }
-    }
-    outFile.close();
-    std::cout << ">>> Robust Heatmap saved to 'robust_heatmap_detailed.csv'\n";
-}
-
-// =========================================================
-// [Mode 4] Full Test Set Heatmap
-// =========================================================
-void ExperimentManager::RunHeatmap_FullTestSet(const CsvLoader::DataSet& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio)
+void ExperimentManager::RunFullTestSet_Boostwrap(const CsvLoader::DataSet& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio)
 {
     auto ctx = PrepareExperiment(dataset, bestClsConfig, bestRegConfig, splitRatio);
 
@@ -364,6 +172,7 @@ void ExperimentManager::RunHeatmap_FullTestSet(const CsvLoader::DataSet& dataset
     std::vector<bool> fullApproval;
     fullApproval.reserve(ctx.testSize);
 
+    // 40 x 20  grid check
     for (auto i = 1; i <= 40; ++i)
     {
         auto pdTh = i * 0.01f;
@@ -372,40 +181,45 @@ void ExperimentManager::RunHeatmap_FullTestSet(const CsvLoader::DataSet& dataset
             auto retTh = j * 0.005f;
 
             fullApproval.clear();
-            auto sumEx = 0.0;
-            auto sumSqEx = 0.0;
-            auto count = 0;
+            auto accExcessReturn = 0.0;
+            auto accSqrExcessReturn = 0.0;
+            auto approveCount = 0;
 
-            for (size_t k = 0; k < ctx.testSize; ++k)
+            for (auto k = 0; k < ctx.testSize; ++k)
             {
-                auto pass = (ctx.predPD[k] < pdTh) && (ctx.predEstReturn[k] > retTh);
-                fullApproval.push_back(pass);
-
-                if (pass)
+                auto bPass = (ctx.predPD[k] < pdTh) && (ctx.predEstReturn[k] > retTh);
+                fullApproval.push_back(bPass);
+                if (bPass)
                 {
-                    auto ex = (double)(ctx.actualReturns[k] - ctx.bondYields[k]);
-                    sumEx += ex;
-                    sumSqEx += ex * ex;
-                    count++;
+                    auto excessReturn = (double)(ctx.actualReturns[k] - ctx.bondYields[k]);
+                    accExcessReturn += excessReturn;
+                    accSqrExcessReturn += excessReturn * excessReturn;
+                    approveCount++;
                 }
             }
 
-            auto mean = 0.0;
-            auto std = 0.0;
-            auto sharpe = 0.0f;
+            auto mean = 0.0;    // mean
+            auto stdDev = 0.0;  // standard deviation
+            auto sharpe = 0.0f; // sharpes ratio
+            auto approveRate = 0.0;
+            auto n = (double)ctx.testSize; // 표본 개수
 
-            if (count >= 10)
+            // (>= 10)
+            if (approveCount >= 10)
             {
-                // 분모를 전체 Test Size로 설정
-                mean = sumEx / (double)ctx.testSize;
-                auto var = (sumSqEx / (double)ctx.testSize) - (mean * mean);
-                std = (var > 0) ? std::sqrt(var) : 0.0;
-
+                // mean of excess return
+                mean = accExcessReturn / n;
+               
+                // formula: Sum((x - mean)^2) = Sum(x^2) - (Sum(x)^2 / N)
+                auto accSqrDiffs = accSqrExcessReturn - ((accExcessReturn * accExcessReturn) / n);
+                if (accSqrDiffs < 0) accSqrDiffs = 0.0;
+                auto variance = accSqrDiffs / (n - 1.0);
+                stdDev = (variance > 0) ? std::sqrt(variance) : 0.0;
                 sharpe = CalculateSharpeRatio(ctx.actualReturns, ctx.bondYields, fullApproval);
             }
 
-            auto rate = (float)count / ctx.testSize * 100.0f;
-            outFile << pdTh << "," << retTh << "," << sharpe << "," << mean << "," << std << "," << count << "," << rate << "\n";
+            approveRate = (float)approveCount / n * 100.0f;
+            outFile << pdTh << "," << retTh << "," << sharpe << "," << mean << "," << stdDev << "," << approveCount << "," << approveRate << "\n";
         }
         if (i % 10 == 0) std::cout << "PD " << i * 0.01f << " done\n";
     }
@@ -448,20 +262,20 @@ BoosterHandle ExperimentManager::TrainBooster(DMatrixHandle hTrain, const ModelC
     return hBooster;
 }
 
-std::vector<ModelConfig> ExperimentManager::GenerateGrid(bool isClassification)
+std::vector<ModelConfig> ExperimentManager::GenerateGrid(bool bClassification)
 {
     std::vector<ModelConfig> configs;
     int idCounter = 1;
 
     // 1. 모델 성격(분류 vs 회귀)에 따른 기본 설정
-    std::string obj = isClassification ? "binary:logistic" : "reg:absoluteerror";
-    std::string metric = isClassification ? "auc" : "mae";
+    std::string obj = bClassification ? "binary:logistic" : "reg:absoluteerror";
+    std::string metric = bClassification ? "auc" : "mae";
 
     // 분류(불균형 데이터)는 양성 클래스에 가중치 4배, 회귀는 1배
-    float scaleWeight = isClassification ? 1.0f : 1.0f;
+    float scaleWeight = bClassification ? 1.0f : 1.0f;
 
     // 분류는 미세한 패턴(1.0)까지, 회귀는 굵직한 패턴(5.0)만 학습
-    float minChild = isClassification ? 1.0f : 1.0f;
+    float minChild = bClassification ? 1.0f : 1.0f;
 
     // 2. 이중 루프로 조합 생성 (Depth x Eta)
     for (auto depth : candidateDepths)
@@ -497,9 +311,9 @@ std::vector<ModelConfig> ExperimentManager::GenerateGrid(bool isClassification)
     return configs;
 }
 
-float ExperimentManager::CalculateSharpeRatio(const std::vector<float>& returns, const std::vector<float>& bondTest, const std::vector<bool>& bApprovals)
+float ExperimentManager::CalculateSharpeRatio(const std::vector<float>& actualReturns, const std::vector<float>& bondYield, const std::vector<bool>& bApprovals)
 {
-    const auto n = returns.size();
+    const auto n = actualReturns.size();
     if (n <= 1) return 0.0f;
 
     //초과 수익률
@@ -513,7 +327,7 @@ float ExperimentManager::CalculateSharpeRatio(const std::vector<float>& returns,
         auto excessVal = 0.0f;
         if (bApprovals[i])
         {
-            excessVal = returns[i] - bondTest[i];
+            excessVal = actualReturns[i] - bondYield[i];
         }
         excessReturns.push_back(excessVal);
         accExcessVal += excessVal;
@@ -559,13 +373,12 @@ void ExperimentManager::PerformRandomPermutationTest(const std::vector<float>& p
     auto approvedCount = 0;
     for (auto i = 0; i < testSize; ++i)
     {
-        // 아까 찾은 Best Threshold 적용 (PD < 0.20 && Return > 0.075)
+        // Best Threshold (PD < 0.20 && Return > 0.075)
         auto pass = (predPD[i] < bestPDTh) && (predRet[i] > bestRetTh);
         fixedApproval.push_back(pass);
         if (pass) approvedCount++;
     }
 
-    // 2. 오리지널(진짜) 샤프지수 계산
     auto originalSharpe = CalculateSharpeRatio(actualRet, bondYields, fixedApproval);
 
     std::cout << "Best Config: PD < " << bestPDTh << ", Ret > " << bestRetTh << "\n";

@@ -35,6 +35,10 @@ struct ValidationMetrics
     float avgPD;            // 승인된 포트폴리오의 평균 부도확률
     int approvedCount;      // 승인된 대출 건수
     float approvedRate;     // 승인율
+
+    // 일부 케이스에서만 활용
+    float bestPDThreshold = 0.0f;
+    float bestReturnThreshold = 0.0f;
 };
 
 struct ExperimentResult
@@ -57,19 +61,11 @@ struct ExperimentContext
 class ExperimentManager
 {
 public:
-    ExperimentResult RunGridSearchFixed(const CsvLoader::DataSet& dataset, float splitRatio, float pdThreshold, float estReturnThreshold);
-
-    // 모드 1: 10k 1회 샘플링 히트맵
-    void RunHeatmap_SingleSample10k(const CsvLoader::DataSet& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio);
-
-    // 모드 2: 고정 파라미터 신뢰성 검증 (1,000번 반복)
+    // 모드 1: 고정 파라미터 신뢰성 검증 (1,000번 반복)
     void RunReliabilityCheck_Bootstrap(const CsvLoader::DataSet& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio);
 
-    // 모드 3: 로버스트 히트맵 (모든 그리드 x 1,000번 반복)
-    void RunHeatmap_RobustBootstrap(const CsvLoader::DataSet& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio);
-
-    // 모드 4: 전체 데이터셋 전수 조사 히트맵
-    void RunHeatmap_FullTestSet(const CsvLoader::DataSet& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio);
+    // 모드 2: 전체 데이터셋 전수 조사 히트맵
+    void RunFullTestSet_Boostwrap(const CsvLoader::DataSet& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio);
 
 private:
     // 공통 로직 분리: 데이터 분할, 학습, 예측 결과를 반환
@@ -77,11 +73,15 @@ private:
 
     // Helper 함수들
     BoosterHandle TrainBooster(DMatrixHandle hTrain, const ModelConfig& config);
-    std::vector<ModelConfig> GenerateGrid(bool isClassification);
-    float CalculateSharpeRatio(const std::vector<float>& returns, const std::vector<float>& bondYields, const std::vector<bool>& approval);
-    void PerformRandomPermutationTest(const std::vector<float>& predPD, const std::vector<float>& predRet, const std::vector<float>& actualRet, const std::vector<float>& bondYields, float bestPDTh, float bestRetTh, int iterations);
-private:
+    std::vector<ModelConfig> GenerateGrid(bool bClassification);
+    float CalculateSharpeRatio(const std::vector<float>& actualReturns, const std::vector<float>& bondYields, const std::vector<bool>& bApprovals);
+    void PerformRandomPermutationTest(const std::vector<float>& predPD, const std::vector<float>& predRet, const std::vector<float>& actualRet, const std::vector<float>& bondTest, float bestPDTh, float bestRetTh, int iterations);
 
+
+    // 최적 임계값 찾는 함수
+    ExperimentResult RunGridSearchAuto(const CsvLoader::DataSet& dataset, float splitRatio);
+    ValidationMetrics FindBestThresholds(const ExperimentContext& ctx);
+private:
     // 1. 깊이 (Depth) 
     std::vector<int> candidateDepths = { 5, 7 };
     // 2. 학습률 (Eta)
