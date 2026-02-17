@@ -39,7 +39,8 @@
 # 1. 가상 환경 생성 (이름: credit_scoring_env)
 ```bash
 conda env create -f env.yml
-
+```
 # 2. 가상 환경 활성화
+```bash
 conda activate loan_status
 ```
