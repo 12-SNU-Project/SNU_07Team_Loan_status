@@ -75,6 +75,9 @@ class ExperimentManager:
         ]
         self.target_col = "loan_status"
 
+# =========================================================
+# CsvLoader 
+# =========================================================
     def load_and_preprocess(self, split_ratio=0.8):
         print(">>> [1/4] Data Loading & Preprocessing...")
         
@@ -120,6 +123,9 @@ class ExperimentManager:
             'test_size': test_size
         }
 
+# ========================================================= 
+# Initialization 
+# =========================================================
     def train_and_predict(self, data):
         print(">>> [2/4] Training Models (Classification & Regression)...")
         
@@ -135,6 +141,94 @@ class ExperimentManager:
 
         return pred_pd, pred_ret
 
+# =========================================================
+# [Mode 1] Reliability Check
+# =========================================================
+    def run_reliability_check_bootstrap(self, data, pred_pd, pred_ret):
+        print("\n" + "="*60)
+        print(">>> [Mode 1] Reliability Check (Bootstrapping)")
+        print("="*60)
+
+        NUM_SIMULATIONS = 1000
+        SAMPLE_SIZE = 10000
+        PD_TH = 0.20
+        RET_TH = 0.075
+
+        print(f"Settings: Iter={NUM_SIMULATIONS}, Sample={SAMPLE_SIZE}")
+        print(f"Target Threshold: PD < {PD_TH}, Ret > {RET_TH}")
+
+        results = []
+        
+        # 전체 데이터 인덱스 준비
+        total_size = len(data['actual_returns'])
+        indices = np.arange(total_size)
+        
+        # 실제 데이터 참조
+        full_actual = data['actual_returns']
+        full_bond = data['bond_yields']
+
+        print(f"Running {NUM_SIMULATIONS} simulations...")
+
+        for s in tqdm(range(1, NUM_SIMULATIONS + 1), desc="Bootstrapping"):
+            # 1. 셔플 및 샘플링 (Subsetting)
+            np.random.shuffle(indices)
+            selected_idx = indices[:SAMPLE_SIZE] # 앞부분 10,000개 추출
+
+            # 2. 샘플 데이터 생성
+            sub_pd = pred_pd[selected_idx]
+            sub_ret = pred_ret[selected_idx]
+            sub_actual = full_actual[selected_idx]
+            sub_bond = full_bond[selected_idx]
+
+            # 3. 필터링 (Vectorized)
+            mask = (sub_pd < PD_TH) & (sub_ret > RET_TH)
+            count = np.sum(mask)
+
+            mean_val = 0.0
+            std_dev = 0.0
+            sharpe = 0.0
+            rate = (count / SAMPLE_SIZE) * 100.0
+
+            if count >= 10:
+                # 4. 샤프지수 계산 (Helper 함수 재사용)
+                # sub_actual의 길이는 10,000이므로 분모는 자동으로 10,000이 됨
+                sharpe = calculate_sharpe_ratio(sub_actual, sub_bond, mask)
+
+                # 5. 통계치 계산 (CSV 기록용)
+                # 거절된 건은 0으로 처리 (초과수익)
+                excess = np.where(mask, sub_actual - sub_bond, 0.0)
+                
+                # Mean: 합계 / 10,000
+                mean_val = np.mean(excess)
+                
+                # StdDev: 합계 / 9,999 (N-1, Unbiased)
+                # ddof=1 옵션이 N-1 계산을 수행함
+                std_dev = np.std(excess, ddof=1)
+
+            results.append({
+                'Sim_ID': s,
+                'Sharpe_Ratio': sharpe,
+                'Mean_Excess_Return': mean_val,
+                'Std_Dev': std_dev,
+                'Approved_Count': count,
+                'Approved_Rate': rate
+            })
+
+        # CSV 저장
+        df_res = pd.DataFrame(results)
+        df_res.to_csv('bootstrapping_detailed_results_python.csv', index=False)
+        
+        # 요약 통계 출력
+        print("-" * 60)
+        print(f"Bootstrap Summary ({NUM_SIMULATIONS} runs):")
+        print(f" - Avg Sharpe: {df_res['Sharpe_Ratio'].mean():.4f}")
+        print(f" - Min Sharpe: {df_res['Sharpe_Ratio'].min():.4f}")
+        print(f" - Max Sharpe: {df_res['Sharpe_Ratio'].max():.4f}")
+        print(">>> Results saved to 'bootstrapping_detailed_results_python.csv'")
+
+# =========================================================
+# [Mode 2] Auto Grid Search (Hyperparams + Thresholds)
+# =========================================================
     def run_heatmap_full_test_set(self, data, pred_pd, pred_ret):
         print("\n" + "="*60)
         print(">>> [Mode 4] Full Test Set Heatmap (Python Version)")
@@ -268,6 +362,164 @@ class ExperimentManager:
             print(">>> WARNING: The strategy might be due to randomness.")
         print("=" * 60)
 
+# =========================================================
+# [Mode 0] Auto Grid Search (Hyperparams + Thresholds)
+# =========================================================
+    def run_grid_search_auto(self, data):
+        print("\n" + "="*60)
+        print(">>> [Mode 0] Automatic Grid Search (Params + Thresholds)")
+        print("="*60)
+
+        # 1. 탐색할 하이퍼파라미터 그리드 정의
+        candidate_depths = [5, 7]
+        candidate_etas = [0.05, 0.01]
+        
+        # 조합 생성 (C++ GenerateGrid와 동일 로직)
+        cls_configs = []
+        reg_configs = []
+
+        # Grid 생성 함수 (내부 헬퍼)
+        def generate_config(depths, etas):
+            configs = []
+            for d in depths:
+                for e in etas:
+                    # Eta에 따라 Round 자동 계산 (C++ 로직: 20 / eta)
+                    rounds = int(20.0 / e)
+                    rounds = max(100, min(rounds, 3000)) # 안전장치
+                    configs.append({'depth': d, 'eta': e, 'rounds': rounds})
+            return configs
+
+        cls_configs = generate_config(candidate_depths, candidate_etas)
+        reg_configs = generate_config(candidate_depths, candidate_etas)
+
+        total_iter = len(cls_configs) * len(reg_configs)
+        print(f">>> Total Model Combinations: {total_iter}")
+        print(">>> Output Log: 'grid_search_auto_python.csv'\n")
+
+        # 결과 저장 리스트
+        results = []
+        best_result = {
+            'sharpe': -999.0, 
+            'config': None, 
+            'metrics': None
+        }
+
+        current_iter = 0
+
+        # 2. 이중 루프로 모델 탐색
+        for c_conf in cls_configs:
+            for r_conf in reg_configs:
+                current_iter += 1
+                
+                # 2-1. 현재 설정으로 모델 학습 및 예측
+                # (기존 train_and_predict를 재사용하되, 파라미터 오버라이딩 적용)
+                
+                # 분류 모델 설정 업데이트
+                curr_cls_opts = CLS_CONFIG.copy()
+                curr_cls_opts['max_depth'] = c_conf['depth']
+                curr_cls_opts['eta'] = c_conf['eta']
+                
+                # 회귀 모델 설정 업데이트
+                curr_reg_opts = REG_CONFIG.copy()
+                curr_reg_opts['max_depth'] = r_conf['depth']
+                curr_reg_opts['eta'] = r_conf['eta']
+
+                # 학습 수행
+                # (진행바가 너무 많아지므로 verbose_eval=False 처리 권장)
+                bst_cls = xgb.train(curr_cls_opts, data['dtrain_cls'], num_boost_round=c_conf['rounds'])
+                bst_reg = xgb.train(curr_reg_opts, data['dtrain_reg'], num_boost_round=r_conf['rounds'])
+
+                pred_pd = bst_cls.predict(data['dtest_cls'])
+                pred_ret = bst_reg.predict(data['dtest_reg'])
+
+                # 2-2. 예측값으로 최적 임계값 탐색 (Helper 호출)
+                metrics = self._find_best_thresholds(data, pred_pd, pred_ret)
+
+                # 2-3. 로그 출력 및 최고 기록 갱신
+                is_best = False
+                if metrics['sharpe'] > best_result['sharpe']:
+                    best_result['sharpe'] = metrics['sharpe']
+                    best_result['config'] = (c_conf, r_conf)
+                    best_result['metrics'] = metrics
+                    is_best = True
+
+                log_msg = (
+                    f"[{current_iter}/{total_iter}] "
+                    f"Cls(d{c_conf['depth']} e{c_conf['eta']}) "
+                    f"Reg(d{r_conf['depth']} e{r_conf['eta']}) | "
+                    f"BestTh({metrics['best_pd']:.2f}/{metrics['best_ret']:.2f}) "
+                    f"-> Sharpe: {metrics['sharpe']:.5f}"
+                )
+                if is_best:
+                    log_msg += " [★ NEW BEST]"
+                print(log_msg)
+
+                # 결과 저장
+                results.append({
+                    'Iter': current_iter,
+                    'Cls_Depth': c_conf['depth'], 'Cls_Eta': c_conf['eta'],
+                    'Reg_Depth': r_conf['depth'], 'Reg_Eta': r_conf['eta'],
+                    'Best_PD_Thresh': metrics['best_pd'],
+                    'Best_Ret_Thresh': metrics['best_ret'],
+                    'Approved_Cnt': metrics['count'],
+                    'Avg_Return': metrics['avg_ret'],
+                    'Avg_PD': metrics['avg_pd'],
+                    'Sharpe_Ratio': metrics['sharpe']
+                })
+
+        # CSV 저장
+        res_df = pd.DataFrame(results)
+        res_df.to_csv('grid_search_auto_python.csv', index=False)
+        print(f"\n>>> Grid Search Complete. Best Sharpe: {best_result['sharpe']:.5f}")
+
+
+    def find_best_thresholds(self, data, pred_pd, pred_ret):
+        """
+        [Internal Helper] 주어진 예측값에 대해 최적의 임계값을 찾는 함수
+        """
+        best_metrics = {
+            'sharpe': -999.0, 'best_pd': 0.0, 'best_ret': 0.0,
+            'count': 0, 'avg_ret': 0.0, 'avg_pd': 0.0
+        }
+
+        # 탐색 후보군 (C++과 동일하게 설정)
+        pd_candidates = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30]
+        ret_candidates = [0.02, 0.04, 0.05, 0.06, 0.07, 0.08]
+
+        actual_returns = data['actual_returns']
+        bond_yields = data['bond_yields']
+        n = len(actual_returns)
+
+        for pd_th in pd_candidates:
+            for ret_th in ret_candidates:
+                # Numpy 마스킹 (Vectorized)
+                mask = (pred_pd < pd_th) & (pred_ret > ret_th)
+                count = np.sum(mask)
+
+                if count < 10:
+                    continue
+
+                # 샤프지수 계산 (Standalone 함수 호출)
+                current_sharpe = calculate_sharpe_ratio(actual_returns, bond_yields, mask)
+
+                if current_sharpe > best_metrics['sharpe']:
+                    # 통계치 계산
+                    excess = np.where(mask, actual_returns - bond_yields, 0.0)
+                    # 승인된 건들에 대한 평균 수익률/부도율 계산
+                    avg_ret = np.mean(actual_returns[mask])
+                    avg_pd = np.mean(pred_pd[mask])
+
+                    best_metrics.update({
+                        'sharpe': current_sharpe,
+                        'best_pd': pd_th,
+                        'best_ret': ret_th,
+                        'count': count,
+                        'avg_ret': avg_ret,
+                        'avg_pd': avg_pd
+                    })
+        
+        return best_metrics
+    
 # =========================================================
 # 메인 실행부
 # =========================================================
