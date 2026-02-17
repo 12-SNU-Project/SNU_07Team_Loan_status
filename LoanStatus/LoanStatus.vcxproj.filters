@@ -4,6 +4,7 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="CsvLoader.cpp" />
     <ClCompile Include="ExperimentManager.cpp" />
+    <ClCompile Include="ExperimentManagerSub.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CsvLoader.h" />

@@ -103,8 +103,8 @@ int main()
         bestReg.scalePosWeight = 1.0f; // È¸±Í´Â 1.0
         bestReg.subsample = 0.8f;
         bestReg.colsample = 0.8f;
-        bestReg.evalMetric = "rmse";
-        manager.RunHeatmap_FullTestSet(dataset, bestCls, bestReg, 0.8f);
+        bestReg.evalMetric = "mae";
+        manager.RunFullTestSet_Boostwrap(dataset, bestCls, bestReg, 0.8f);
     }
     catch (const std::exception& e)
     {
