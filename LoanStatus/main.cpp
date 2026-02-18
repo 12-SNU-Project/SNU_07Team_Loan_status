@@ -61,50 +61,38 @@ int main()
             "loan_status", "Return",
         };
 
-        std::cout << ">>> [1/3] Data Loading...\n";
+        std::cout << ">>> [1/4] Data Loading...\n";
         CsvLoader loader(csvFile, targetColumn, ignoreList);
-        auto dataset = loader.Load();
+        //auto dataset = loader.Load();
+        auto dataPack = loader.LoadAndSplit(0.6f, 0.2f);
 
-        if (dataset.rows == 0) 
+        if (dataPack.test.rows == 0) 
         {
             std::cerr << "Error: No data found.\n"; return 1;
         }
-        std::cout << " -> Load Complete: " << dataset.rows << " Rows, " << dataset.cols << " Cols\n";
+        std::cout << " -> Load Complete: " << dataPack.test.rows  + dataPack.train.rows + dataPack.val.rows << " Rows, " << dataPack.test.cols << " Cols\n";
        
 
         std::cout << "\nContinuing to Training? (1: Yes / 0: No): ";
         int bKeepGoing = 0;
         std::cin >> bKeepGoing;
         if (bKeepGoing != 1) return 0;
+        
+        ExperimentManager manager;
+        std::cout << "\n>>> [1/4] Find BestConfig from Roubust Range...\n";
+        std::print("    - ETA Range:{}\n", manager.candidateEtas);
+        std::print("    - Depth Range:{}\n", manager.candidateDepths);
+        auto result = manager.RunGridSearchAuto(dataPack);
+       
 
         // [설정 2 & 3] 실험 및 검증 실행
-        std::cout << "\n>>> [2/3] Starting Integrated Grid Search...\n";
+        std::cout << "\n>>> [2/4] Starting Integrated Grid Search...\n";
         std::cout << "    - Strategy: Dual Model (Classification + Regression)\n";
         std::cout << "    - Optimization: Parameter Grid + Threshold Auto-Tuning\n";
 
-        ExperimentManager manager;
-        ModelConfig bestCls;
-        bestCls.maxDepth = 7;       // Log: "Best Depth: 7"
-        bestCls.eta = 0.05f;        // Log: "Best Eta: 0.05"
-        bestCls.numRound = 400;     // Log: "Rounds: 400"
-        bestCls.objective = "binary:logistic";
-        bestCls.minChildWeight = 1.0f;
-        bestCls.scalePosWeight = 1.0f;
-        bestCls.subsample = 0.8f;
-        bestCls.colsample = 0.8f;
-        bestCls.evalMetric = "auc";
-
-        ModelConfig bestReg;
-        bestReg.maxDepth = 5;       // Log: "Best Depth: 5"
-        bestReg.eta = 0.05f;        // Log: "Best Eta: 0.05"
-        bestReg.numRound = 400;     // Log: "Rounds: 400"
-        bestReg.objective = "reg:absoluteerror";
-        bestReg.minChildWeight = 1.0f;
-        bestReg.scalePosWeight = 1.0f; // 회귀는 1.0
-        bestReg.subsample = 0.8f;
-        bestReg.colsample = 0.8f;
-        bestReg.evalMetric = "mae";
-        manager.RunFullTestSet_Boostwrap(dataset, bestCls, bestReg, 0.8f);
+        manager.RunStandardValidation(dataPack, result.bestClsConfig, result.bestRegConfig);
+    
+        //manager.RunFullTestSet_Boostwrap(dataset, bestCls, bestReg, 0.8f);
     }
     catch (const std::exception& e)
     {

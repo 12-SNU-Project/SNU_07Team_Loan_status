@@ -61,6 +61,9 @@ struct ExperimentContext
 class ExperimentManager
 {
 public:
+    ExperimentResult RunGridSearchAuto(const CsvLoader::DataSet& dataset, float splitRatio);
+    ExperimentResult RunGridSearchAuto(const CsvLoader::DataPack& pack);
+
     // 모드 1: 고정 파라미터 신뢰성 검증 (1,000번 반복)
     void RunReliabilityCheck_Bootstrap(const CsvLoader::DataSet& dataset, const ModelConfig& bestClsConfig, const ModelConfig& bestRegConfig, float splitRatio);
 
@@ -79,9 +82,16 @@ private:
 
 
     // 최적 임계값 찾는 함수
-    ExperimentResult RunGridSearchAuto(const CsvLoader::DataSet& dataset, float splitRatio);
+  
     ValidationMetrics FindBestThresholds(const ExperimentContext& ctx);
+
+public:
+    // 6:2:2 전용 추가
+    void RunStandardValidation(const CsvLoader::DataPack& pack, const ModelConfig& bestCls, const ModelConfig& bestReg);
 private:
+    BoosterHandle TrainModelOnSet(const CsvLoader::DataSet& trainSet, const ModelConfig& config);
+    ExperimentContext PredictOnSet(BoosterHandle hCls, BoosterHandle hReg, const CsvLoader::DataSet& targetSet);
+public:
     // 1. 깊이 (Depth) 
     std::vector<int> candidateDepths = { 5, 7 };
     // 2. 학습률 (Eta)
