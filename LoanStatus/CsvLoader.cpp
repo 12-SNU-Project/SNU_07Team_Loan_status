@@ -148,14 +148,12 @@ CsvLoader::DataPack CsvLoader::LoadAndSplit(float trainRatio, float valRatio)
     std::mt19937 g(42);
     std::shuffle(indices.begin(), indices.end(), g);
 
-    // 3. 분할 개수 계산
     auto trainCount = static_cast<int>(totalRows * trainRatio);
     auto validCount = static_cast<int>(totalRows * valRatio);
-    // 나머지는 테스트셋
+    auto testCount = totalRows - trainCount - validCount;
 
     DataPack pack;
 
-    // 메모리 예약 (속도 최적화)
     pack.train.features.reserve(trainCount * numCols);
     pack.train.labels.reserve(trainCount);
     pack.train.rows = 0; pack.train.cols = numCols;
@@ -164,7 +162,7 @@ CsvLoader::DataPack CsvLoader::LoadAndSplit(float trainRatio, float valRatio)
     pack.val.labels.reserve(validCount);
     pack.val.rows = 0; pack.val.cols = numCols;
 
-    auto testCount = totalRows - trainCount - validCount;
+   
     pack.test.features.reserve(testCount * numCols);
     pack.test.labels.reserve(testCount);
     pack.test.rows = 0; pack.test.cols = numCols;
