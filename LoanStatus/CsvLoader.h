@@ -16,6 +16,13 @@ public:
         int rows = 0;
         int cols = 0;
     };
+    
+    struct DataPack
+    {
+        DataSet train; // Train (60%)
+        DataSet val;   // Test (20%) - get thresh hold
+        DataSet test;  // Validation (20%) - final check
+    };
 
     CsvLoader(std::string filename, std::string targetColName, std::set<std::string> ignoreColNames)
         : fName(std::move(filename)),
@@ -29,6 +36,7 @@ public:
     }
     // 메인 로딩 함수
     DataSet Load();
+    DataPack LoadAndSplit(float trainRatio = 0.6f, float valRatio = 0.2f);
 
 private:
     std::string fName;
@@ -40,7 +48,7 @@ private:
     {
         std::vector<std::string> tokens;
         tokens.reserve(30);
-        size_t start = 0;
+        auto start = (size_t)0;
         auto end = s.find(delimiter);
         while (end != std::string::npos)
         {

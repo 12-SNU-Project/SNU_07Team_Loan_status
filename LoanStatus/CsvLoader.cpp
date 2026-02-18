@@ -129,6 +129,85 @@ CsvLoader::DataSet CsvLoader::Load()
     return finalData;
 }
 
+CsvLoader::DataPack CsvLoader::LoadAndSplit(float trainRatio, float valRatio)
+{
+    std::cout << ">>> [CsvLoader] Loading raw data...\n";
+    DataSet raw = Load();
+
+    std::cout << ">>> [CsvLoader] Shuffling and Splitting (Train: "
+        << trainRatio << ", Val: " << valRatio << ")... \n";
+
+    auto totalRows = raw.rows;
+    auto numCols = raw.cols;
+
+    // 2. 인덱스 셔플링: 0부터 N-1까지 숫자를 만들고 섞음
+    std::vector<int> indices(totalRows);
+    std::iota(indices.begin(), indices.end(), 0);
+
+    // fixed random seed
+    std::mt19937 g(42);
+    std::shuffle(indices.begin(), indices.end(), g);
+
+    // 3. 분할 개수 계산
+    auto trainCount = static_cast<int>(totalRows * trainRatio);
+    auto validCount = static_cast<int>(totalRows * valRatio);
+    // 나머지는 테스트셋
+
+    DataPack pack;
+
+    // 메모리 예약 (속도 최적화)
+    pack.train.features.reserve(trainCount * numCols);
+    pack.train.labels.reserve(trainCount);
+    pack.train.rows = 0; pack.train.cols = numCols;
+
+    pack.val.features.reserve(validCount * numCols);
+    pack.val.labels.reserve(validCount);
+    pack.val.rows = 0; pack.val.cols = numCols;
+
+    auto testCount = totalRows - trainCount - validCount;
+    pack.test.features.reserve(testCount * numCols);
+    pack.test.labels.reserve(testCount);
+    pack.test.rows = 0; pack.test.cols = numCols;
+
+    // 4. 데이터 분배 (셔플된 인덱스 순서대로)
+    for (auto i = 0; i < totalRows; ++i)
+    {
+        auto originalIdx = indices[i]; // 섞인 인덱스
+
+        // 어떤 셋에 넣을지 결정
+        DataSet* target = nullptr;
+        if (i < trainCount) target = &pack.train;
+        else if (i < trainCount + validCount) target = &pack.val;
+        else target = &pack.test;
+
+        // Data Copy
+        // 4-1. Label, Return, Bond (단일 값)
+        target->labels.push_back(raw.labels[originalIdx]);
+        target->returns.push_back(raw.returns[originalIdx]);
+        target->bondYields.push_back(raw.bondYields[originalIdx]);
+
+        // 4-2. Features (1D 배열에서 해당 행의 구간 복사)
+        // features 벡터는 [row0_col0, row0_col1, ..., row1_col0 ...] 순서임
+        auto startPos = (size_t)originalIdx * numCols;
+        auto endPos = startPos + numCols;
+
+        target->features.insert(
+            target->features.end(),
+            raw.features.begin() + startPos,
+            raw.features.begin() + endPos
+        );
+
+        target->rows++;
+    }
+
+    std::cout << ">>> Split Complete.\n";
+    std::cout << " - Train Rows: " << pack.train.rows << "\n";
+    std::cout << " - Val Rows:   " << pack.val.rows << "\n";
+    std::cout << " - Test Rows:  " << pack.test.rows << "\n";
+
+    return pack;
+}
+
 void CsvLoader::ParseWorker(size_t start, size_t end, size_t headerEndPos, const std::vector<int>& featureIndices, int targetIdx, int returnIdx, int bondIdx, DataSet& outResult)
 {
     // 각 스레드는 파일 스트림을 별도로 열어야 안전함 (읽기 전용이라도 seekg 충돌 방지)
