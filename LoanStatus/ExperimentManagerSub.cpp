@@ -2,11 +2,6 @@
 #include "CsvLoader.h"
 #include "ExperimentManager.h"
 
-
-// =========================================================
-// [Mode 0] Find Best ThreshHold Configuration
-// =========================================================
-
 ExperimentResult ExperimentManager::RunGridSearchAuto(const CsvLoader::DataSet& dataset, float splitRatio)
 {
     std::ofstream csvFile("grid_search_auto.csv");
@@ -72,13 +67,16 @@ ExperimentResult ExperimentManager::RunGridSearchAuto(const CsvLoader::DataSet& 
 
 ValidationMetrics ExperimentManager::FindBestThresholds(const ExperimentContext& ctx)
 {
+    std::ofstream csvFile("th.csv");
+    csvFile << "PD_Thresh, Ret_Thresh, " << " Approved_Rate, " << "Approved_Cnt, Avg_Return, Avg_PD,Sharpe_Ratio\n";
+
     ValidationMetrics bestMetrics;
     bestMetrics.sharpeRatio = -999.0f;
     bestMetrics.approvedCount = 0;
 
     // 탐색할 후보군
-    std::vector<float> pdCandidates = { 0.05f, 0.10f, 0.15f, 0.20f, 0.25f, 0.30f };
-    std::vector<float> retCandidates = { 0.02f, 0.04f, 0.05f, 0.06f, 0.07f, 0.08f };
+    std::vector<float> pdCandidates = { 0.01f, 0.02f, 0.03f, 0.04f, 0.05f, 0.06f, 0.07f, 0.08f, 0.09f, 0.10f, 0.11f, 0.12f, 0.13f, 0.14f, 0.15f, 0.16f, 0.17f, 0.18f, 0.19f, 0.20f };
+    std::vector<float> retCandidates = { 0.02f, 0.04f, 0.06f, 0.08f, 0.10f, 0.12f, 0.14f, 0.16f, 0.18f, 0.20f };
 
     // PrepareExperiment가 리턴한 ctx에는 이미 Test Set만 들어있음
     auto n = ctx.testSize;
@@ -91,7 +89,7 @@ ValidationMetrics ExperimentManager::FindBestThresholds(const ExperimentContext&
             auto approvalCount = 0;
             auto sumRet = 0.0;
             auto sumPD = 0.0;
-
+            auto curTh = 0.0;
             // 벡터화된 연산이 없으므로 루프로 필터링
             for (auto i = 0; i < n; ++i)
             {
@@ -110,6 +108,8 @@ ValidationMetrics ExperimentManager::FindBestThresholds(const ExperimentContext&
 
             // 기존 함수 재사용 (정확한 N-1 샤프지수 계산)
             auto currentSharpe = CalculateSharpeRatio(ctx.actualReturns, ctx.bondYields, approval);
+            csvFile << pdTh << ", " << retTh << ", " << (float)approvalCount / n * 100.0f << ", " << approvalCount
+                << ", " << (float)(sumRet / approvalCount) << ", " << (float)(sumPD / approvalCount) << ", " << currentSharpe << "\n";
 
             // 최고 기록 갱신
             if (currentSharpe > bestMetrics.sharpeRatio)
@@ -121,6 +121,7 @@ ValidationMetrics ExperimentManager::FindBestThresholds(const ExperimentContext&
                 bestMetrics.approvedRate = (float)approvalCount / n * 100.0f;
                 bestMetrics.avgReturn = (float)(sumRet / approvalCount);
                 bestMetrics.avgPD = (float)(sumPD / approvalCount);
+               
             }
         }
     }
@@ -140,7 +141,7 @@ ExperimentResult ExperimentManager::RunGridSearchAuto(const CsvLoader::DataPack&
 
     auto clsConfigs = GenerateGrid(true);
     auto regConfigs = GenerateGrid(false);
-
+    
     auto totalIter = (int)(clsConfigs.size() * regConfigs.size());
     std::cout << ">>> Total Combinations: " << totalIter << "\n";
 
@@ -150,9 +151,25 @@ ExperimentResult ExperimentManager::RunGridSearchAuto(const CsvLoader::DataPack&
     auto curRound = 0;
     std::cout << std::fixed << std::setprecision(4);
 
-    for (const auto& cConf : clsConfigs)
+    ModelConfig cConf;
+    cConf.eta = 0.01;
+    cConf.id = 1;
+    cConf.maxDepth = 7;
+    cConf.objective = "binary:logistic";
+    cConf.evalMetric = "auc";
+    cConf.numRound = 2000;
+
+    ModelConfig rConf;
+    rConf.eta = 0.05;
+    rConf.maxDepth = 7;
+    rConf.id = 1;
+    rConf.objective = "reg:absoluteerror";
+    rConf.evalMetric = "mae";
+    rConf.numRound = 400;
+
+    //for (const auto& cConf : clsConfigs)
     {
-        for (const auto& rConf : regConfigs)
+        //for (const auto& rConf : regConfigs)
         {
             curRound++;
 
@@ -161,10 +178,9 @@ ExperimentResult ExperimentManager::RunGridSearchAuto(const CsvLoader::DataPack&
             auto hCls = TrainModelOnSet(pack.train, cConf);
             auto hReg = TrainModelOnSet(pack.train, rConf);
 
-            // 2. Validation Set (20%)으로 예측 수행
+            // 2. Validation Set (20%) 예측 수행
             auto valCtx = PredictOnSet(hCls, hReg, pack.val);
-
-
+            
             // 3. Validation Set 기준 최적 임계값 및 샤프지수 계산
             auto metrics = FindBestThresholds(valCtx);
 
@@ -204,7 +220,7 @@ ExperimentResult ExperimentManager::RunGridSearchAuto(const CsvLoader::DataPack&
     csvFile.close();
     std::cout << "\n>>> Grid Search Complete.\n";
     std::cout << ">>> Best Validation Sharpe: " << bestResult.bestMetrics.sharpeRatio << "\n";
-
+  
     return bestResult;
 }
 
@@ -274,7 +290,7 @@ void ExperimentManager::RunStandardValidation(const CsvLoader::DataPack& pack, c
         << " (" << (float)approvedCount / testCtx.testSize * 100.f << "%)\n";
 
     float diff = std::abs(finalSharpe - bestMetrics.sharpeRatio);
-    if (diff < 0.5f) 
+    if (diff < 0.3f) 
     {
         std::cout << ">>> SUCCESS: Model is Robust! (Val & Test scores are similar)\n";
     }

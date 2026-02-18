@@ -1,7 +1,6 @@
 #pragma once
 class CsvLoader;
 
-// XGBoost 에러 체크 매크로
 inline void SAFE_XGBOOST(int call)
 {
     if (call != 0)
@@ -11,7 +10,6 @@ inline void SAFE_XGBOOST(int call)
     }
 }
 
-// 1. 모델 설정 구조체 (기존 유지)
 struct ModelConfig
 {
     int id;                 // id 인덱스
@@ -27,7 +25,7 @@ struct ModelConfig
     float colsample = 1.0f;      // 열 샘플링 비율
 };
 
-// 2. 검증 결과 구조체 (기존 유지)
+
 struct ValidationMetrics
 {
     float sharpeRatio;      // 샤프 지수
@@ -48,7 +46,7 @@ struct ExperimentResult
     ValidationMetrics bestMetrics;
 };
 
-// 실험 데이터를 담는 컨텍스트 (중복 제거용)
+// 실험 데이터를 담는 컨텍스트
 struct ExperimentContext
 {
     std::vector<float> predPD;          // 예측된 부도확률
@@ -96,4 +94,6 @@ public:
     std::vector<int> candidateDepths = { 5, 7 };
     // 2. 학습률 (Eta)
     std::vector<float> candidateEtas = { 0.05f, 0.01f };
+
+    int totalSize = 0;
 };

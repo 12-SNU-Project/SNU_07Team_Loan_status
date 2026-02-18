@@ -53,12 +53,12 @@ int main()
     try
     {
         // [설정 1] 데이터 로딩
-        auto csvFile = "loan_status.csv"s;
+        auto csvFile = "NewData.csv"s;
         auto targetColumn = "loan_status"s;
         std::set<std::string> ignoreList =
         {
             "Actual_term", "total_pymnt", "last_pymnt_amnt", (const char*)u8"내부수익률",
-            "loan_status", "Return",
+            "loan_status", "Return", (const char*)u8"초과수익률", "Month", "Year"
         };
 
         std::cout << ">>> [1/4] Data Loading...\n";
@@ -79,20 +79,16 @@ int main()
         if (bKeepGoing != 1) return 0;
         
         ExperimentManager manager;
+        manager.totalSize = dataPack.test.rows + dataPack.train.rows + dataPack.val.rows;
         std::cout << "\n>>> [1/4] Find BestConfig from Roubust Range...\n";
         std::print("    - ETA Range:{}\n", manager.candidateEtas);
         std::print("    - Depth Range:{}\n", manager.candidateDepths);
         auto result = manager.RunGridSearchAuto(dataPack);
-       
-
-        // [설정 2 & 3] 실험 및 검증 실행
-        std::cout << "\n>>> [2/4] Starting Integrated Grid Search...\n";
-        std::cout << "    - Strategy: Dual Model (Classification + Regression)\n";
-        std::cout << "    - Optimization: Parameter Grid + Threshold Auto-Tuning\n";
-
-        manager.RunStandardValidation(dataPack, result.bestClsConfig, result.bestRegConfig);
     
-        //manager.RunFullTestSet_Boostwrap(dataset, bestCls, bestReg, 0.8f);
+        // [설정 2 & 3] 실험 및 검증 실행
+        /*std::cout << "\n>>> [2/4] Starting Integrated Grid Search...\n";
+        std::cout << "    - Strategy: Dual Model (Classification + Regression)\n";
+        std::cout << "    - Optimization: Parameter Grid + Threshold Auto-Tuning\n";*/
     }
     catch (const std::exception& e)
     {

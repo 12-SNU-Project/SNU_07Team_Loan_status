@@ -137,7 +137,6 @@ void ExperimentManager::RunReliabilityCheck_Bootstrap(const CsvLoader::DataSet& 
 
         if (approvedCount >= 10)
         {
-            // full test set
             auto accSqrDiffs = accSqrExcessReturn - ((accExcessReturn * accExcessReturn) / n);
             if (accSqrDiffs < 0) accSqrDiffs = 0.0;
             auto variance = accSqrDiffs / (n - 1.0);
@@ -374,9 +373,9 @@ void ExperimentManager::PerformRandomPermutationTest(const std::vector<float>& p
     for (auto i = 0; i < testSize; ++i)
     {
         // Best Threshold (PD < 0.20 && Return > 0.075)
-        auto pass = (predPD[i] < bestPDTh) && (predRet[i] > bestRetTh);
-        fixedApproval.push_back(pass);
-        if (pass) approvedCount++;
+        auto bPass = (predPD[i] < bestPDTh) && (predRet[i] > bestRetTh);
+        fixedApproval.push_back(bPass);
+        if (bPass) approvedCount++;
     }
 
     auto originalSharpe = CalculateSharpeRatio(actualRet, bondYields, fixedApproval);
