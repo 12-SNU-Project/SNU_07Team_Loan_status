@@ -57,7 +57,7 @@ def calculate_sharpe_ratio(actual_returns, bond_yields, approval_mask):
     mean_excess = np.mean(excess_returns)
     std_dev = np.std(excess_returns, ddof=1)
 
-    # 3. 샤프 지수 반환
+    # 3. 샤프 지수 반환 
     if std_dev < 1e-9:
         return 0.0
     
@@ -89,7 +89,7 @@ class ExperimentManager:
         split_point = int(total_rows * split_ratio)
         test_size = total_rows - split_point
 
-        # 1. Target & Returns & Bond 분리
+        # 1. Target=> Y & Returns & Bond 분리 => Sharpes Ratio
         y_cls = df[self.target_col].values
         y_reg = df['Return'].values
         bond_yields = df['Bond'].values
@@ -122,7 +122,250 @@ class ExperimentManager:
             'bond_yields': test_bond_yields,
             'test_size': test_size
         }
+    
+    
+        print("\n" + "="*60)
+        print(">>> [Mode 3] Standard Validation (6:2:2 Split)")
+        print(">>> Using Best Configs found in Grid Search")
+        print("="*60)
 
+        cls_conf = best_result['best_cls_config']
+        reg_conf = best_result['best_reg_config']
+        best_metrics = best_result['best_metrics']
+
+        print(f"[Config CLS] Depth: {cls_conf['depth']}, Eta: {cls_conf['eta']}")
+        print(f"[Config REG] Depth: {reg_conf['depth']}, Eta: {reg_conf['eta']}")
+        print(f"[Thresholds] PD < {best_metrics['best_pd']:.2f}, Ret > {best_metrics['best_ret']:.3f}")
+
+        # -----------------------------------------------------
+        # Step 1: Train Set (60%)으로 모델 재학습
+        # -----------------------------------------------------
+        print(f">>> [Step 1] Training Models on Train Set ({data_pack['train']['rows']} rows)...")
+        
+        final_cls_opts = CLS_CONFIG.copy()
+        final_cls_opts.update({'max_depth': cls_conf['depth'], 'eta': cls_conf['eta']})
+        
+        final_reg_opts = REG_CONFIG.copy()
+        final_reg_opts.update({'max_depth': reg_conf['depth'], 'eta': reg_conf['eta']})
+
+        bst_cls = xgb.train(final_cls_opts, data_pack['train']['dmatrix_cls'], num_boost_round=cls_conf['rounds'])
+        bst_reg = xgb.train(final_reg_opts, data_pack['train']['dmatrix_reg'], num_boost_round=reg_conf['rounds'])
+
+        # -----------------------------------------------------
+        # Step 2: Test Set (20%)으로 최종 검증
+        # -----------------------------------------------------
+        print(f">>> [Step 2] Final Verification on Test Set ({data_pack['test']['rows']} rows)...")
+        
+        pred_pd_test = bst_cls.predict(data_pack['test']['dmatrix_cls'])
+        pred_ret_test = bst_reg.predict(data_pack['test']['dmatrix_reg'])
+
+        # Validation에서 찾은 임계값 적용
+        final_mask = (pred_pd_test < best_metrics['best_pd']) & (pred_ret_test > best_metrics['best_ret'])
+        approved_count = np.sum(final_mask)
+        total_test = len(final_mask)
+
+        # 안전장치 (C++과 동일)
+        final_sharpe = 0.0
+        if approved_count >= 10:
+            final_sharpe = calculate_sharpe_ratio(
+                data_pack['test']['actual_returns'],
+                data_pack['test']['bond_yields'],
+                final_mask
+            )
+        else:
+            print(f">>> [WARNING] Not enough approved samples ({approved_count} < 10). Sharpe set to 0.0.")
+
+        print(f"\n>>> [Final Result]")
+        print(f"1. Validation Sharpe : {best_result['sharpe']:.4f}")
+        print(f"2. Test Set Sharpe   : {final_sharpe:.4f}")
+        print(f"3. Approved Count    : {approved_count} / {total_test} ({approved_count/total_test*100:.2f}%)")
+
+        diff = abs(final_sharpe - best_result['sharpe'])
+        if diff < 0.5:
+            print(">>> SUCCESS: Model is Robust! (Val & Test scores are similar)")
+        else:
+            print(">>> WARNING: Large gap detected. Check for Overfitting.")
+
+        # -----------------------------------------------------
+        # (Bonus) Permutation Test on Test Set
+        # -----------------------------------------------------
+        self.perform_permutation_test(
+            pred_pd_test, pred_ret_test,
+            data_pack['test']['actual_returns'],
+            data_pack['test']['bond_yields'],
+            best_metrics['best_pd'], best_metrics['best_ret']
+        )
+
+    def run_grid_search_auto(self, data_pack):
+        print("\n" + "="*60)
+        print(">>> [Mode 0] Automatic Grid Search (Params + Thresholds)")
+        print(">>> Training on 60% (Train), Evaluating on 20% (Val)")
+        print("="*60)
+
+        # 1. 탐색할 하이퍼파라미터 그리드 정의
+        candidate_depths = [5, 7]
+        candidate_etas = [0.05, 0.01]
+        
+        # Grid 생성 함수 (내부 헬퍼)
+        def generate_config(depths, etas):
+            configs = []
+            for d in depths:
+                for e in etas:
+                    # Eta에 따라 Round 자동 계산 (C++ 로직: 20 / eta)
+                    rounds = int(20.0 / e)
+                    rounds = max(100, min(rounds, 3000)) # 안전장치
+                    configs.append({'depth': d, 'eta': e, 'rounds': rounds})
+            return configs
+
+        cls_configs = generate_config(candidate_depths, candidate_etas)
+        reg_configs = generate_config(candidate_depths, candidate_etas)
+
+        total_iter = len(cls_configs) * len(reg_configs)
+        print(f">>> Total Model Combinations: {total_iter}")
+
+        # 결과 저장용
+        best_result = {
+            'sharpe': -999.0, 
+            'best_cls_config': None,
+            'best_reg_config': None,
+            'best_metrics': None
+        }
+
+        current_iter = 0
+        results_log = []
+
+        # 2. 이중 루프로 모델 탐색
+        for c_conf in cls_configs:
+            for r_conf in reg_configs:
+                current_iter += 1
+                
+                # 2-1. Train Set(60%)으로 모델 학습
+                curr_cls_opts = CLS_CONFIG.copy()
+                curr_cls_opts['max_depth'] = c_conf['depth']
+                curr_cls_opts['eta'] = c_conf['eta']
+                
+                curr_reg_opts = REG_CONFIG.copy()
+                curr_reg_opts['max_depth'] = r_conf['depth']
+                curr_reg_opts['eta'] = r_conf['eta']
+
+                # 학습 (Train Set)
+                bst_cls = xgb.train(curr_cls_opts, data_pack['train']['dmatrix_cls'], num_boost_round=c_conf['rounds'])
+                bst_reg = xgb.train(curr_reg_opts, data_pack['train']['dmatrix_reg'], num_boost_round=r_conf['rounds'])
+
+                # 2-2. Validation Set(20%) 예측
+                pred_pd_val = bst_cls.predict(data_pack['val']['dmatrix_cls'])
+                pred_ret_val = bst_reg.predict(data_pack['val']['dmatrix_reg'])
+
+                # 2-3. Validation Set 기준 최적 임계값 탐색
+                metrics = self._find_best_thresholds(
+                    pred_pd_val, pred_ret_val, 
+                    data_pack['val']['actual_returns'], 
+                    data_pack['val']['bond_yields']
+                )
+
+                # 2-4. 로그 출력 및 최고 기록 갱신
+                is_best = False
+                if metrics['sharpe'] > best_result['sharpe']:
+                    best_result['sharpe'] = metrics['sharpe']
+                    best_result['best_cls_config'] = c_conf
+                    best_result['best_reg_config'] = r_conf
+                    best_result['best_metrics'] = metrics
+                    is_best = True
+
+                log_msg = (
+                    f"[{current_iter}/{total_iter}] "
+                    f"C(d{c_conf['depth']} e{c_conf['eta']}) "
+                    f"R(d{r_conf['depth']} e{r_conf['eta']}) | "
+                    f"Val-Sharpe: {metrics['sharpe']:.4f}"
+                )
+                if is_best:
+                    log_msg += " [★ NEW BEST]"
+                print(log_msg)
+
+                # 로그 저장
+                results_log.append({
+                    'Iter': current_iter,
+                    'Cls_Depth': c_conf['depth'], 'Cls_Eta': c_conf['eta'],
+                    'Reg_Depth': r_conf['depth'], 'Reg_Eta': r_conf['eta'],
+                    'Best_PD': metrics['best_pd'], 'Best_Ret': metrics['best_ret'],
+                    'Val_Sharpe': metrics['sharpe']
+                })
+
+        # CSV 저장
+        pd.DataFrame(results_log).to_csv('grid_search_auto_python.csv', index=False)
+        print(f"\n>>> Grid Search Complete. Best Validation Sharpe: {best_result['sharpe']:.5f}")
+        
+        return best_result
+
+    def run_standard_validation(self, data_pack, best_result):
+        print("\n" + "="*60)
+        print(">>> [Mode 3] Standard Validation (6:2:2 Split)")
+        print(">>> Using Best Configs found in Grid Search")
+        print("="*60)
+
+        cls_conf = best_result['best_cls_config']
+        reg_conf = best_result['best_reg_config']
+        best_metrics = best_result['best_metrics']
+
+        print(f"[Config CLS] Depth: {cls_conf['depth']}, Eta: {cls_conf['eta']}")
+        print(f"[Config REG] Depth: {reg_conf['depth']}, Eta: {reg_conf['eta']}")
+        print(f"[Thresholds] PD < {best_metrics['best_pd']:.2f}, Ret > {best_metrics['best_ret']:.3f}")
+
+        # Train Set (60%)
+        print(f">>> [Step 1] Training Models on Train Set ({data_pack['train']['rows']} rows)...")
+        
+        final_cls_opts = CLS_CONFIG.copy()
+        final_cls_opts.update({'max_depth': cls_conf['depth'], 'eta': cls_conf['eta']})
+        
+        final_reg_opts = REG_CONFIG.copy()
+        final_reg_opts.update({'max_depth': reg_conf['depth'], 'eta': reg_conf['eta']})
+
+        bst_cls = xgb.train(final_cls_opts, data_pack['train']['dmatrix_cls'], num_boost_round=cls_conf['rounds'])
+        bst_reg = xgb.train(final_reg_opts, data_pack['train']['dmatrix_reg'], num_boost_round=reg_conf['rounds'])
+
+       
+        #Validation Set (20%)
+        print(f">>> [Step 2] Final Verification on Test Set ({data_pack['test']['rows']} rows)...")
+        
+        pred_pd_test = bst_cls.predict(data_pack['test']['dmatrix_cls'])
+        pred_ret_test = bst_reg.predict(data_pack['test']['dmatrix_reg'])
+
+        # Validation에서 찾은 임계값 적용
+        final_mask = (pred_pd_test < best_metrics['best_pd']) & (pred_ret_test > best_metrics['best_ret'])
+        approved_count = np.sum(final_mask)
+        total_test = len(final_mask)
+
+        # 안전장치 (C++과 동일)
+        final_sharpe = 0.0
+        if approved_count >= 10:
+            final_sharpe = calculate_sharpe_ratio(
+                data_pack['test']['actual_returns'],
+                data_pack['test']['bond_yields'],
+                final_mask
+            )
+        else:
+            print(f">>> [WARNING] Not enough approved samples ({approved_count} < 10). Sharpe set to 0.0.")
+
+        print(f"\n>>> [Final Result]")
+        print(f"1. Validation Sharpe : {best_result['sharpe']:.4f}")
+        print(f"2. Test Set Sharpe   : {final_sharpe:.4f}")
+        print(f"3. Approved Count    : {approved_count} / {total_test} ({approved_count/total_test*100:.2f}%)")
+
+        diff = abs(final_sharpe - best_result['sharpe'])
+        if diff < 0.5:
+            print(">>> SUCCESS: Model is Robust! (Val & Test scores are similar)")
+        else:
+            print(">>> WARNING: Large gap detected. Check for Overfitting.")
+
+        # -----------------------------------------------------
+        # (Bonus) Permutation Test on Test Set
+        # -----------------------------------------------------
+        self.perform_permutation_test(
+            pred_pd_test, pred_ret_test,
+            data_pack['test']['actual_returns'],
+            data_pack['test']['bond_yields'],
+            best_metrics['best_pd'], best_metrics['best_ret']
+        )
 # ========================================================= 
 # Initialization 
 # =========================================================
@@ -142,7 +385,7 @@ class ExperimentManager:
         return pred_pd, pred_ret
 
 # =========================================================
-# [Mode 1] Reliability Check
+# [Mode 1] Best Config Reliability Check
 # =========================================================
     def run_reliability_check_bootstrap(self, data, pred_pd, pred_ret):
         print("\n" + "="*60)
@@ -231,7 +474,7 @@ class ExperimentManager:
 # =========================================================
     def run_heatmap_full_test_set(self, data, pred_pd, pred_ret):
         print("\n" + "="*60)
-        print(">>> [Mode 4] Full Test Set Heatmap (Python Version)")
+        print(">>> [Mode 2] Full Test Set Heatmap (Python Version)")
         print("="*60)
 
         # 결과 저장용 리스트
@@ -239,7 +482,7 @@ class ExperimentManager:
         
         # 최적 파라미터 추적용
         best_sharpe = -999.0
-        best_params = {'pd_th': 0.0, 'ret_th': 0.0}
+        best_params = {'pd_th': 0.00, 'ret_th': 0.0}
 
         # Grid Search Loops
         pd_thresholds = [i * 0.01 for i in range(1, 41)]   # 0.01 ~ 0.40
@@ -471,7 +714,6 @@ class ExperimentManager:
         res_df = pd.DataFrame(results)
         res_df.to_csv('grid_search_auto_python.csv', index=False)
         print(f"\n>>> Grid Search Complete. Best Sharpe: {best_result['sharpe']:.5f}")
-
 
     def find_best_thresholds(self, data, pred_pd, pred_ret):
         """
