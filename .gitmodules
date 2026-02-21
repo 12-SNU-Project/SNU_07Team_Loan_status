@@ -1,0 +1,3 @@
+[submodule "LoanStatus/external/xgboost"]
+	path = LoanStatus/external/xgboost
+	url = https://github.com/dmlc/xgboost.git
