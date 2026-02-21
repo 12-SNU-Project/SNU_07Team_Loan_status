@@ -1,0 +1,30 @@
+cmake_minimum_required(VERSION 3.15)
+project(XGBoostManager)
+
+# 1. 경로 설정
+set(XGBOOST_SRC "${CMAKE_CURRENT_SOURCE_DIR}/external/xgboost")
+set(OUTPUT_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
+set(OUTPUT_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib")
+
+# 2. XGBoost 빌드 옵션 (Windows 환경 최적화)
+set(XGBOOST_BUILD_STATIC_LIB OFF CACHE BOOL "Build Shared Library (.dll)")
+set(XGBOOST_BUILD_PYTHON_PACKAGE OFF CACHE BOOL "")
+
+# 3. XGBoost 서브프로젝트 포함
+add_subdirectory(${XGBOOST_SRC} EXCLUDE_FROM_ALL)
+
+# 4. 빌드 후 파일 복사 (Post-Build Step)
+# 'xgboost'는 XGBoost 내부의 타겟 이름입니다.
+add_custom_command(TARGET xgboost POST_BUILD
+    # 헤더 파일 복사
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${OUTPUT_INCLUDE_DIR}/xgboost"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory 
+            "${XGBOOST_SRC}/include/xgboost" "${OUTPUT_INCLUDE_DIR}/xgboost"
+    
+    # 라이브러리 파일 복사 (.lib 및 .dll)
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${OUTPUT_LIB_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:xgboost> "${OUTPUT_LIB_DIR}/"
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_LINKER_FILE:xgboost> "${OUTPUT_LIB_DIR}/"
+    
+    COMMENT "Copying XGBoost binaries and headers to project folders..."
+)

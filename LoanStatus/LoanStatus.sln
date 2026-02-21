@@ -1,9 +1,9 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-VisualStudioVersion = 17.14.36915.13 d17.14
+VisualStudioVersion = 17.14.36915.13
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "LoanStatus", "LoanStatus.vcxproj", "{F4159C51-BEBD-4BA1-82C0-3650B7345516}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "LoanStatus", "src\LoanStatus.vcxproj", "{F4159C51-BEBD-4BA1-82C0-3650B7345516}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
