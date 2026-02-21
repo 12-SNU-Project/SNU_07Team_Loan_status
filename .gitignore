@@ -1,6 +1,21 @@
 # Created by https://www.toptal.com/developers/gitignore/api/c,c++,visualstudio
 # Edit at https://www.toptal.com/developers/gitignore?templates=c,c++,visualstudio
 
+
+*/build/                  # CMake 빌드 임시 폴더
+*/.cache/                 # 컴파일러 캐시
+*/CMakeUserPresets.json   # 개인별 CMake 설정
+LoanStatus/build/
+LoanStatus/include/
+LoanStatus/lib/
+
+# --- Python (src_py 관련) ---
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+
+
 ### C ###
 # Prerequisites
 *.d
